@@ -1,0 +1,43 @@
+COME INSERIRE I FONT:
+Cartella: fonts
+Ho creato la cartella e un README.md con istruzioni dettagliate.
+Formato dei file dei font:
+I file devono essere header .h generati da uno strumento di conversione font per Adafruit GFX. Ecco come ottenerli:
+
+Strumento consigliato: Usa truetype2gfx (online, gratuito).
+
+Carica un file .ttf o .otf.
+Seleziona dimensione (es. 12pt), caratteri ASCII (32-126 per lettere/numeri/simboli).
+Genera il codice.
+Contenuto del file (esempio Arial12pt.h):
+
+Come aggiungere al codice:
+
+Salva il file in fonts come NomeFont.h.
+In ui.cpp, aggiungi #include "fonts/NomeFont.h".
+Nell'array fonts[], aggiungi &NomeFont.
+Aggiorna NUM_FONTS e il % nel menu per includere più font.
+Nel fontNames[] in ui.cpp, aggiungi il nome visualizzato.
+Ad esempio, per aggiungere Arial:
+
+File: lib/fonts/Arial12pt.h
+Include: #include "fonts/Arial12pt.h"
+Array: const GFXfont* fonts[] = { &FreeSans9pt7b, &FreeSansBold24pt7b, &Arial12pt };
+Nomi: const char* fontNames[] = {"Normale", "Bold", "Arial"};
+Menu: appState.selectedFontIndex = (appState.selectedFontIndex + 1) % 3;
+Il font selezionato verrà applicato a tutto il testo dell'UI
+
+
+
+
+COME IMPOSTARE NEL PROGETTO LE ICONE:
+Vettori o Array di Byte nel Codice (Lo standard "Embedded")
+È l'approccio più usato nei microcontrollori. Tu crei la tua icona su PC (con Illustrator, Photoshop, Paint), poi usi un programmino (o un sito web) che converte l'immagine in una serie di numeri esadecimali (un Array di Byte o Bitmap C-Array).
+
+Come funziona: Creiamo un file (es. lib/fonts/icone.h) che contiene solo queste sequenze di numeri. Quando la UI deve disegnare, passa semplicemente questo "blocco di numeri" alla funzione nativa drawBitmap() di GxEPD2.
+Vantaggi:
+Velocità estrema: Il display viene aggiornato istantaneamente. Zero tempi di caricamento file.
+Efficienza: Non consuma RAM extra, i dati sono letti direttamente dalla memoria programma (PROGMEM).
+Nessuna decodifica: GxEPD2 è già fatto apposta per "mangiare" questi array di byte in modo nativo.
+Svantaggi:
+Se in futuro vuoi cambiare un simbolo, devi rifare la conversione in numeri, incollarli nel file icone.h e ricompilare/riflashare il firmware. Non puoi semplicemente "trascinare un file".

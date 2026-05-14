@@ -1,0 +1,11 @@
+Valore letto dal multimetro - valore ADC grezzo letto da ESP32 sul pin D34
+
+(adc esp32 a 12 bit, valore di lettura compreso tra 0 e 4095, 
+nel mio caso il range è tra 1950 e 2580)
+
+3.88V - 2196
+3.86V - 2097
+3.86V - 2173
+3.84V - 2167
+3,73V - 2093
+3,67V - 2061

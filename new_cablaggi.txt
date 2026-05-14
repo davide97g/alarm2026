@@ -1,0 +1,127 @@
+1. Batterie (1x 18650)
+Polo Positivo (+) ➔ Pad B+ del Modulo TP4056
+Polo Negativo (-) ➔ Pad B- del Modulo TP4056
+
+2. Modulo di Ricarica (TP4056)
+Pad B+ ➔ Polo Positivo (+) delle Batterie
+Pad B- ➔ Polo Negativo (-) delle Batterie
+Pad OUT+ ➔ Pin 1 dell'Interruttore Principale
+Pad OUT- ➔ Origine fisica del Bus GND SISTEMA
+
+3. Interruttore Principale (Rocker Switch)
+Pin 1 ➔ Pad OUT+ del Modulo TP4056
+Pin 2 ➔ Pad VIN+ dell'Elevatore MT3608
+Pin 2 ➔ Entrata Resistenza 1 (100kΩ) ➔ Pin D34 dell'ESP32
+Pin 2 ➔ Pin VIN del Modulo Audio MAX98357A
+
+4. Elevatore di Tensione (MT3608)
+Pad VIN+ ➔ Pin 2 dell'Interruttore Principale
+Pad VIN- ➔ Bus GND SISTEMA
+Pad VOUT+ ➔ Pin VIN dell'ESP32
+Pad VOUT+ ➔ Terminale VIN+ del Modulo MOSFET
+Pad VOUT+ ➔ Polo (+) Condensatore Primario (470µF) ➔ Bus GND SISTEMA
+Pad VOUT- ➔ Bus GND SISTEMA
+
+5. ESP32
+Pin VIN ➔ Pad VOUT+ dell'Elevatore MT3608
+Pin GND ➔ Bus GND SISTEMA
+Pin 3V3 ➔ Pin VCC del Display e-Paper
+Pin 3V3 ➔ Pin VCC del Modulo RTC DS3231
+Pin 3V3 ➔ Pin VIN/VCC del Modulo Ambientale BME280
+Pin D2 ➔ Entrata Resistenza A (47Ω) ➔ Pin BCLK del Modulo Audio MAX98357A
+Pin D5 ➔ Entrata Resistenza B (47Ω) ➔ Pin LRC del Modulo Audio MAX98357A
+Pin D19 ➔ Entrata Resistenza C (47Ω) ➔ Pin DIN del Modulo Audio MAX98357A
+Pin D13 ➔ Pin SD_MODE del Modulo Audio MAX98357A, mai acceso in contemporanea al ESP32
+Pin D25 ➔ Pin PWM / TRIG del Modulo MOSFET
+Pin D23 ➔ Pin DIN (MOSI) del Display e-Paper
+Pin D18 ➔ Pin CLK (SCK) del Display e-Paper
+Pin D26 ➔ Pin CS del Display e-Paper
+Pin D27 ➔ Pin DC del Display e-Paper
+Pin D16 ➔ Pin RST del Display e-Paper
+Pin D35 ➔ Pin BUSY del Display e-Paper
+Pin D4 ➔ Pin PWR del Display e-Paper
+Pin D32 ➔ Pin SDA del Modulo RTC DS3231
+Pin D32 ➔ Pin SDA del Modulo Ambientale BME280
+Pin D22 ➔ Pin SCL del Modulo RTC DS3231
+Pin D22 ➔ Pin SCL del Modulo Ambientale BME280
+Pin D21 ➔ Pin 2 dello Switch Meccanico 1 (Tasto A)
+Pin D33 ➔ Pin 2 dello Switch Meccanico 2 (Tasto B)
+Pin D34 ➔ Nodo Centrale ➔ Tra Uscita Resistenza 1 (da Interruttore) e Entrata Resistenza 2 (verso GND)
+Pin D14 ➔ Pin SQW del Modulo RTC DS3231
+
+6. Modulo Audio (MAX98357A)
+Pin VIN ➔ Pin 2 dell'Interruttore Principale
+Pin VIN ➔ Polo (+) Condensatore Audio (220µF) ➔ Pin GND del Modulo Audio
+Pin GND ➔ Bus GND SISTEMA
+Pin GND ➔ Polo (-) Condensatore Audio (220µF) ➔ Pin VIN del Modulo Audio, deve essere saldato dentro i fori del modulo audio
+Pin BCLK ➔ Uscita Resistenza A (47Ω) ➔ Pin D2 dell'ESP32
+Pin LRC ➔ Uscita Resistenza B (47Ω) ➔ Pin D5 dell'ESP32
+Pin DIN ➔ Uscita Resistenza C (47Ω) ➔ Pin D19 dell'ESP32
+Pin SD_MODE ➔ Pin D13 dell'ESP32
+Morsetto (+) ➔ Terminale (+) dello Speaker Audio
+Morsetto (-) ➔ Terminale (-) dello Speaker Audio
+
+7. Speaker Audio (3W, 4Ω)
+Terminale (+) ➔ Morsetto (+) del Modulo Audio MAX98357A
+Terminale (-) ➔ Morsetto (-) del Modulo Audio MAX98357A
+
+8. Modulo Visivo di Potenza (MOSFET per LED)
+Terminale VIN+ ➔ Pad VOUT+ dell'Elevatore MT3608
+Terminale VIN- ➔ Bus GND SISTEMA
+Pin PWM / TRIG ➔ Pin D25 dell'ESP32
+Pin GND ➔ Bus GND SISTEMA
+Terminale OUT+ ➔ Pad (+) della Striscia COB LED
+Terminale OUT- ➔ Pad (-) della Striscia COB LED
+
+9. Striscia COB LED 5V
+Pad (+) ➔ Terminale OUT+ del Modulo MOSFET
+Pad (-) ➔ Terminale OUT- del Modulo MOSFET
+
+10. Display e-Paper
+Pin VCC ➔ Pin 3V3 dell'ESP32
+Pin GND ➔ Bus GND SISTEMA
+Pin DIN (MOSI) ➔ Pin D23 dell'ESP32
+Pin CLK (SCK) ➔ Pin D18 dell'ESP32
+Pin CS ➔ Pin D26 dell'ESP32
+Pin DC ➔ Pin D27 dell'ESP32
+Pin RST ➔ Pin D16 dell'ESP32
+Pin BUSY ➔ Pin D35 dell'ESP32
+Pin PWR ➔ Pin D4 dell'ESP32
+
+11. Modulo RTC (DS3231)
+Pin VCC ➔ Pin 3V3 dell'ESP32
+Pin GND ➔ Bus GND SISTEMA
+Pin SDA ➔ Pin D32 dell'ESP32
+Pin SCL ➔ Pin D22 dell'ESP32
+Pin SQW ➔ Pin D14 dell'ESP32
+
+12. Modulo Ambientale (BME280)
+Pin VIN/VCC ➔ Pin 3V3 dell'ESP32
+Pin GND ➔ Bus GND SISTEMA
+Pin SDA ➔ Pin D32 dell'ESP32
+Pin SCL ➔ Pin D22 dell'ESP32
+
+13. Switch Meccanico 1 (Tasto A)
+Pin 1 ➔ Bus GND SISTEMA
+Pin 2 ➔ Pin D21 dell'ESP32
+
+14. Switch Meccanico 2 (Tasto B)
+Pin 1 ➔ Bus GND SISTEMA
+Pin 2 ➔ Pin D33 dell'ESP32
+
+15. Nodo Centrale di Massa: Bus GND SISTEMA
+Tutte le seguenti linee devono finire al Pad OUT- del TP4056 (o a un cavo/piastra di giunzione che parte da lì):
+➔ Modulo TP4056 (Pad OUT-)
+➔ Elevatore MT3608 (Pad VIN-)
+➔ Elevatore MT3608 (Pad VOUT-)
+➔ Polo (-) Condensatore Primario (470µF) ➔ Pad VOUT+ dell'MT3608
+➔ ESP32 (Pin GND)
+➔ Modulo Audio MAX98357A (Pin GND)
+➔ Modulo MOSFET (Terminale VIN-)
+➔ Modulo MOSFET (Pin GND Segnale)
+➔ Display e-Paper (Pin GND)
+➔ Modulo RTC DS3231 (Pin GND)
+➔ Modulo Ambientale BME280 (Pin GND)
+➔ Switch Meccanico 1 (Pin 1)
+➔ Switch Meccanico 2 (Pin 1)
+➔ Uscita Resistenza 2 (100kΩ) ➔ Pin D34 dell'ESP32
