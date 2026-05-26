@@ -3,7 +3,7 @@
 
 #include <Arduino.h>
 
-// Definizione dei 6 stati possibili dei pulsanti
+// Definizione degli stati possibili
 enum InputEvent {
     INPUT_NONE = 0,
     INPUT_BTN_A_SHORT,
@@ -11,14 +11,15 @@ enum InputEvent {
     INPUT_BTN_AB_SHORT,
     INPUT_BTN_A_LONG,
     INPUT_BTN_B_LONG,
-    INPUT_BTN_AB_LONG
+    INPUT_BTN_AB_LONG,
+    INPUT_RTC_WAKEUP // Nuovo evento hardware
 };
 
-// Inizializza i pin assegnati ai pulsanti (abilita le resistenze PULLUP)
-void input_init(uint8_t pinA, uint8_t pinB, unsigned long longPressMs);
+// Inizializza i pin assegnati ai pulsanti e all'RTC (avvia il task RTOS)
+void input_init(uint8_t pinA, uint8_t pinB, uint8_t pinRtc, unsigned long longPressMs);
 
-// Da chiamare costantemente nel loop() per leggere lo stato hardware
-// Ritorna l'evento rilevato (o INPUT_NONE se non è successo nulla)
-InputEvent input_update();
+// Legge un evento in modo asincrono o bloccante
+// timeout_ms: 0 = non bloccante, portMAX_DELAY = bloccante infinito, altrimenti attesa max in ms
+InputEvent input_get_event(uint32_t timeout_ms);
 
 #endif // INPUT_H

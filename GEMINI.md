@@ -66,7 +66,8 @@ Sviluppo del firmware per una sveglia intelligente basata su ESP32, completa di 
 - [x] Integrazione Font Personalizzati: Sostituiti i font di base con "Futura Medium". Utilizzati `Futura_alphanum_20pt7b.h` (20pt per la UI) e `Futura_onlynumbers200pt7b.h` (200pt solo numeri per l'orologio, estratti selettivamente per risparmiare RAM).
 - [x] Risoluzione conflitti librerie font: Rinominati i riferimenti strutturali (`New_Font`) nei file GFX generati online per consentire inclusioni multiple silenziose.
 - [x] Ottimizzazione Asset Grafici: Creazione del file `icone.h` in PROGMEM per l'uso di bitmap esadecimali (es. icona WiFi), sostituendo il disegno tramite vecchie primitive vettoriali.
-- [x] Consolidamento UI e-Paper: Definita architettura grafica a 1-bit netta per garantire il supporto al *Partial Refresh*, incompatibile fisicamente con i livelli di grigio sfumati.
+- [x] Consolidamento UI e-Paper: Definita architettura a 1-bit netta per garantire il supporto al Partial Refresh, incompatibile fisicamente con i livelli di grigio.
+- [x] Ottimizzazione Consumi e-Paper: Implementato *Sleep Passivo* tramite `esp_light_sleep_start()` in `epdBusyCallback`. L'ESP32 ora dorme (0.8mA) anziché girare a vuoto (40mA) durante l'attesa del pin BUSY, azzerando quasi totalmente il consumo energetico dovuto ai refresh del display (quando non è in riproduzione audio).
 
 ## Aggiornamenti Recenti (9 Aprile 2026)
 - **Risoluzione Errori Compilazione:** 

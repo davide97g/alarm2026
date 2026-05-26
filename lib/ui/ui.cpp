@@ -31,29 +31,7 @@ const uint8_t NUM_FONTS = sizeof(fonts) / sizeof(fonts[0]);
 extern char trackNames[NUM_TRACKS][64];
 extern uint8_t actualNumTracks;
 
-// Valori iniziali fittizi (force refresh al primo giro)
-RTC_DATA_ATTR SystemState lastDrawnState = {
-    /* .hour, .minute, .day, .month, .year, .dayOfWeek */
-    255, 255, 0, 0, 0, 8,
-    /* .temperature, .humidity, .batteryVoltage, .batteryPercent, .batAdcMin, .batAdcMax, .longPressMs */
-    -999.0, -999.0, 0.0, 255, 0, 0, 0,
-    /* .currentScreen, .menuCursorIndex, .menuItemIndex, .currentTrackIndex, .isEditingAlarm, .alarmEditFieldIndex, .nextAlarmFound, .nextAlarmHour, .nextAlarmMinute */
-    SCREEN_HOME, 255, 255, 255, false, 255, false, 255, 255,
-    /* .alarmVolume, .snoozeTime, .autoStopTime, .alarmsGloballyEnabled */
-    255, 255, 255, false,
-    /* .alarms */
-    {
-        {255, 255, false, ALARM_SINGLE}, {255, 255, false, ALARM_SINGLE}, {255, 255, false, ALARM_SINGLE}, {255, 255, false, ALARM_SINGLE},
-        {255, 255, false, ALARM_SINGLE}, {255, 255, false, ALARM_SINGLE}, {255, 255, false, ALARM_SINGLE}, {255, 255, false, ALARM_SINGLE},
-        {255, 255, false, ALARM_SINGLE}, {255, 255, false, ALARM_SINGLE}, {255, 255, false, ALARM_SINGLE}, {255, 255, false, ALARM_SINGLE},
-        {255, 255, false, ALARM_SINGLE}, {255, 255, false, ALARM_SINGLE}, {255, 255, false, ALARM_SINGLE}, {255, 255, false, ALARM_SINGLE}    },
-    /* .numConfiguredAlarms, .ledBrightness, .ledAutoOffTime, .selectedFontIndex, .isPreviewPlaying, .audioError */
-    255, 255, 255, 255, false, false,
-    /* .ntpSynced, .ntpDisabled, .wifiStatus, .lastNtpSyncTime */
-    false, false, "", 0,
-    /* .bluetoothEnabled, .bluetoothConnected, .bluetoothDeviceName, .pairedDevicesCount */
-    false, false, "", 0
-};
+RTC_DATA_ATTR SystemState lastDrawnState;
 
 // Voci del menù per le Tab orizzontali (abbreviate per farle entrare in ~198px)
 const char* tabItems[] = {

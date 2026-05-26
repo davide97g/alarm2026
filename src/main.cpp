@@ -10,7 +10,7 @@
 #include "network.h" // Inclusione per la sincronizzazione NTP
 #include "config.h" // Configurazioni centralizzate (Pin, costanti globali)
 #include "watchdog.h" // Gestione watchdog per recovery da blocchi critici
-#include <Preferences.h> // Libreria nativa ESP32 per salvare dati persistenti
+#include "StateManager.h" // Gestore di stato centralizzato
 #include <esp_attr.h> // Necessario per RTC_DATA_ATTR
 #include <driver/gpio.h> // Necessario per gpio_hold_en
 #include <driver/rtc_io.h> // Necessario per gpio_deep_sleep_hold_en
@@ -33,39 +33,9 @@ const int64_t INACTIVITY_TIMEOUT_US = 30000000LL; // 30 secondi di inattività p
 // Nota: Uso l'inizializzazione posizionale aggregata invece dei designatori C++20.
 // Questo funge da workaround per un possibile bug del compilatore o un problema dell'ambiente
 // di build che causava un errore sull'ordine dei campi, nonostante l'ordine fosse corretto.
-RTC_DATA_ATTR SystemState appState = {
-  /* .hour, .minute, .day, .month, .year, .dayOfWeek, .temperature, .humidity, .batteryVoltage, .batteryPercent, .batAdcMin, .batAdcMax, .longPressMs */
-  12, 30, 1, 1, 2000, 0, 22.5, 45.0, 4.2, 100, BAT_ADC_MIN_DEFAULT, BAT_ADC_MAX_DEFAULT, LONG_PRESS_MS_DEFAULT,
-  /* .currentScreen, .menuCursorIndex, .menuItemIndex, .currentTrackIndex, .isEditingAlarm, .alarmEditFieldIndex, .nextAlarmFound, .nextAlarmHour, .nextAlarmMinute */
-  SCREEN_HOME, 0, 0, 0, false, 0, false, 255, 255,
-  /* .alarmVolume, .snoozeTime, .autoStopTime, .alarmsGloballyEnabled */
-  7, 5, 3, true,
-  /* .alarms */
-  { // Inizializzatore per l'array 'alarms'
-    {7, 0, false, ALARM_SINGLE}, {7, 30, false, ALARM_SINGLE}, {8, 0, false, ALARM_SINGLE}, {8, 30, false, ALARM_SINGLE},
-    {9, 0, false, ALARM_SINGLE}, {9, 30, false, ALARM_SINGLE}, {10, 0, false, ALARM_SINGLE}, {10, 30, false, ALARM_SINGLE},
-    {11, 0, false, ALARM_SINGLE}, {11, 30, false, ALARM_SINGLE}, {12, 0, false, ALARM_SINGLE}, {12, 30, false, ALARM_SINGLE},
-    {13, 0, false, ALARM_SINGLE}, {13, 30, false, ALARM_SINGLE}, {14, 0, false, ALARM_SINGLE}, {14, 30, false, ALARM_SINGLE}
-  },
-  /* .numConfiguredAlarms, .ledBrightness, .ledAutoOffTime, .selectedFontIndex, .isPreviewPlaying, .audioError */
-  0, 5, 10, 0, false, false,
-  /* .ntpSynced, .ntpDisabled, .wifiStatus, .lastNtpSyncTime */
-  false, false, "✗ Non sincron.", 0,
-  /* .bluetoothEnabled, .bluetoothConnected, .bluetoothDeviceName, .pairedDevicesCount */
-  false, false, "Nessuno", 0
-};
+RTC_DATA_ATTR SystemState appState;
 bool ledState = false;
-RTC_DATA_ATTR int lastSyncDay = -1; // Memorizza l'ultimo giorno in cui è stata fatta la sync NTP
-RTC_DATA_ATTR uint32_t lastNtpAttempt = 0; // Timestamp dell'ultimo tentativo NTP (per retry orario)
-RTC_DATA_ATTR uint8_t lastBatteryHour = 255; // Ultima ora in cui è stata letta la batteria (255 = mai letta)
 
-// Variabili di stato per la funzione Snooze (persistenti in RAM RTC)
-RTC_DATA_ATTR bool isSnoozeActive = false;
-RTC_DATA_ATTR uint8_t snoozeTargetHour = 0;
-RTC_DATA_ATTR uint8_t snoozeTargetMinute = 0;
-
-// Istanza globale per accedere alla memoria flash
-Preferences preferences;
 
 void print_wakeup_reason() {
   esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
@@ -108,63 +78,7 @@ void goToLightSleep() {
   performWakeupTasks(reason);
 }
 
-// Funzione helper per caricare tutte e 9 le sveglie dalla memoria non volatile
-void loadAlarms() {
-    appState.numConfiguredAlarms = preferences.getUChar("num_alarms", 0); // Di base, parte pulito a 0.
-    for (uint8_t i = 0; i < 16; i++) {
-        char key[15]; // Le chiavi Preferences supportano max 15 caratteri
-        
-        snprintf(key, sizeof(key), "a%d_h", i); // es. "a0_h" per l'ora sveglia 0
-        appState.alarms[i].hour = preferences.getUChar(key, appState.alarms[i].hour);
-        
-        snprintf(key, sizeof(key), "a%d_m", i); // es. "a0_m" per i minuti
-        appState.alarms[i].minute = preferences.getUChar(key, appState.alarms[i].minute);
-         
-        snprintf(key, sizeof(key), "a%d_act", i); // es. "a0_act" per lo stato
-        appState.alarms[i].active = preferences.getBool(key, false);
-        
-        snprintf(key, sizeof(key), "a%d_rec", i); // es. "a0_rec" per la ricorrenza
-        appState.alarms[i].recurrence = (AlarmRecurrence)preferences.getUChar(key, ALARM_SINGLE);
-    }
-}
 
-// Funzione helper per salvare in memoria un singolo slot sveglia (usata in seguito dalla UI)
-void saveAllAlarms() {
-    preferences.putUChar("num_alarms", appState.numConfiguredAlarms);
-    for (uint8_t index = 0; index < 16; index++) {
-        char key[15];
-        
-        snprintf(key, sizeof(key), "a%d_h", index);
-        preferences.putUChar(key, appState.alarms[index].hour);
-        
-        snprintf(key, sizeof(key), "a%d_m", index);
-        preferences.putUChar(key, appState.alarms[index].minute);
-        
-        snprintf(key, sizeof(key), "a%d_act", index);
-        preferences.putBool(key, appState.alarms[index].active);
-        
-        snprintf(key, sizeof(key), "a%d_rec", index);
-        preferences.putUChar(key, (uint8_t)appState.alarms[index].recurrence);
-    }
-}
-
-// Funzione helper per eliminare una sveglia e compattare l'array
-void deleteAlarm(uint8_t index) {
-    if (index >= appState.numConfiguredAlarms) return;
-    
-    // Shifta le sveglie successive indietro di 1 posizione
-    for (uint8_t i = index; i < appState.numConfiguredAlarms - 1; i++) {
-        appState.alarms[i] = appState.alarms[i + 1];
-    }
-    
-    // Pulisci l'ultimo elemento rimasto duplicato per coerenza
-    uint8_t lastIdx = appState.numConfiguredAlarms - 1;
-    appState.alarms[lastIdx] = {7, 0, false, ALARM_SINGLE};
-    
-    appState.numConfiguredAlarms--;
-    saveAllAlarms();              // Salva la nuova lista in NVS
-    calculateNextAlarm(appState); // Ricalcola per aggiornare l'RTC
-}
 
 // Variabile per mantenere la memoria dell'ultimo livello di batteria e applicare un po' di hysteresis
 static int lastBatteryPercent = -1;
@@ -181,8 +95,8 @@ void updateBatteryOnly() {
     // Dati reali rilevati e convalidati dal multimetro agli estremi di carica:
     // - 4.21V (4210mV) -> ADC 2400 (Carica completa)
     // - 2.80V (2800mV) -> ADC 1510 (Scarica completa)
-    // Questa mappa copre l'intera curva interpolando linearmente con i nuovi estremi definitivi.
-    long mapped_mv = map(adc_reading, 1510, 2400, 2800, 4210);
+    // Questa mappa copre l'intera curva interpolando linearmente usando i limiti definiti dall'utente in NVS.
+    long mapped_mv = map(adc_reading, appState.batAdcMin, appState.batAdcMax, 2800, 4210);
 
     float voltage = mapped_mv / 1000.0f;
 
@@ -245,9 +159,9 @@ void updateSensorsData(bool fullUpdate = true) {
     }
 
     // 2. Lettura Batteria ogni ora cambiata (indipendentemente da fullUpdate)
-    if (current_hour_for_battery_check != lastBatteryHour) {
+    if (current_hour_for_battery_check != appState.lastBatteryHour) {
         updateBatteryOnly();
-        lastBatteryHour = current_hour_for_battery_check;
+        appState.lastBatteryHour = current_hour_for_battery_check;
         Serial.printf("[BATTERY] Aggiornata ogni ora: %d%%\n", appState.batteryPercent);
     }
 
@@ -289,8 +203,7 @@ void triggerManualNtpSync(SystemState &state) {
             state.ntpSynced = true;
             state.lastNtpSyncTime = local_epoch_time; // Salva il timestamp UTC
             strncpy(state.wifiStatus, "✓ OK", sizeof(state.wifiStatus) - 1);
-            preferences.putBool("ntp_synced", true);
-            preferences.putULong("last_ntp", state.lastNtpSyncTime);
+            stateManager.setNtpSynced(state, true, state.lastNtpSyncTime);
             updateSensorsData(true);
         } else {
             // Questo blocco else non dovrebbe essere raggiunto se syncTimeNTP ha restituito true.
@@ -334,12 +247,12 @@ void performWakeupTasks(esp_sleep_wakeup_cause_t wakeup_reason) {
           int currentMins = local_timeinfo->tm_hour * 60 + local_timeinfo->tm_min;
           
           // 1. Controllo se è in corso uno Snooze
-          if (isSnoozeActive) {
-              int snoozeMinsFromMidnight = snoozeTargetHour * 60 + snoozeTargetMinute;
+          if (appState.isSnoozeActive) {
+              int snoozeMinsFromMidnight = appState.snoozeTargetHour * 60 + appState.snoozeTargetMinute;
               int diff = abs(currentMins - snoozeMinsFromMidnight);
               if (diff <= 2 || diff >= 1438) {
                   shouldRing = true;
-                  isSnoozeActive = false; // Consuma lo snooze (ora sta suonando)
+                  appState.isSnoozeActive = false; // Consuma lo snooze (ora sta suonando)
                   Serial.println("[ALARM] Snooze time raggiunto! Suono...");
               }
           }
@@ -365,7 +278,7 @@ void performWakeupTasks(esp_sleep_wakeup_cause_t wakeup_reason) {
                           shouldRing = true;
                           if (appState.alarms[i].recurrence == ALARM_SINGLE) {
                               appState.alarms[i].active = false;
-                              saveAllAlarms();
+                              stateManager.saveAllAlarms(appState);
                               Serial.printf("Sveglia %d (Singola) auto-disattivata.\n", i + 1);
                           }
                       }
@@ -405,10 +318,10 @@ void performWakeupTasks(esp_sleep_wakeup_cause_t wakeup_reason) {
   
   if (!appState.ntpDisabled && !appState.ntpSynced) {
       // Se non si è mai sincronizzato, riprova ma aspetta comunque il normale intervallo di retry per non distruggere la batteria
-      shouldAttemptNtp = (currentTimeSeconds - lastNtpAttempt) > (NTP_RETRY_INTERVAL / 1000);
+      shouldAttemptNtp = (currentTimeSeconds - appState.lastNtpAttempt) > NTP_RETRY_INTERVAL;
       if (shouldAttemptNtp) Serial.printf("[NTP] Tentativo di sincronizzazione iniziale (timeout %ums)\n", NTP_INITIAL_TIMEOUT);
   } else if (!appState.ntpDisabled && appState.ntpSynced && appState.hour == 3 && appState.minute == 30) {
-      shouldAttemptNtp = (currentTimeSeconds - lastNtpAttempt) > (NTP_RETRY_INTERVAL / 1000);
+      shouldAttemptNtp = (currentTimeSeconds - appState.lastNtpAttempt) > NTP_RETRY_INTERVAL;
       if (shouldAttemptNtp) {
           Serial.printf("[NTP] Routine notturna (03:30): retry NTP (timeout %ums)\n", NTP_QUICK_TIMEOUT);
       }
@@ -416,7 +329,7 @@ void performWakeupTasks(esp_sleep_wakeup_cause_t wakeup_reason) {
   
   if (shouldAttemptNtp) {
       unsigned long ntpTimeout = appState.ntpSynced ? NTP_QUICK_TIMEOUT : NTP_INITIAL_TIMEOUT;
-      lastNtpAttempt = currentTimeSeconds;
+      appState.lastNtpAttempt = currentTimeSeconds;
       
       if (syncTimeNTP(WIFI_SSID, WIFI_PASSWORD, ntpTimeout)) {
           struct tm timeinfo;
@@ -429,9 +342,8 @@ void performWakeupTasks(esp_sleep_wakeup_cause_t wakeup_reason) {
               appState.ntpSynced = true;
               appState.lastNtpSyncTime = local_epoch_time; // Salva il timestamp UTC
               strncpy(appState.wifiStatus, "✓ OK", sizeof(appState.wifiStatus) - 1);
-              preferences.putBool("ntp_synced", true);
-              preferences.putULong("last_ntp", appState.lastNtpSyncTime);
-              lastNtpAttempt = local_epoch_time; // Aggiorna lastNtpAttempt con l'orario sincronizzato
+              stateManager.setNtpSynced(appState, true, appState.lastNtpSyncTime);
+              appState.lastNtpAttempt = local_epoch_time; // Aggiorna lastNtpAttempt con l'orario sincronizzato
               updateSensorsData(true);
               forceFullRefresh = true;
           } else {
@@ -446,8 +358,8 @@ void performWakeupTasks(esp_sleep_wakeup_cause_t wakeup_reason) {
   } 
   
   // Garantisce il Full Refresh notturno alle 3:30 indipendentemente dall'esito dell'NTP
-  if (appState.hour == 3 && appState.minute == 30 && lastSyncDay != appState.day) {
-      lastSyncDay = appState.day;
+  if (appState.hour == 3 && appState.minute == 30 && appState.lastSyncDay != appState.day) {
+      appState.lastSyncDay = appState.day;
       forceFullRefresh = true;
   }
 
@@ -534,33 +446,16 @@ void setup() {
   print_wakeup_reason(); // Stampa subito il motivo dell'accensione
   lastActivityTime = esp_timer_get_time(); // Inizializza il timer di attività
 
-  // Inizializza la partizione NVS (Non-Volatile Storage) per i settaggi
-  preferences.begin("sveglia", false);
-  
-  // Carica le impostazioni dalla memoria non volatile
-  appState.alarmVolume = preferences.getUChar("vol", 7);
-  appState.snoozeTime = preferences.getUChar("snooze", 5);
-  appState.autoStopTime = preferences.getUChar("autostop", 3);
-  appState.alarmsGloballyEnabled = preferences.getBool("al_global", true);
-  appState.ledBrightness = preferences.getUChar("led_bri", 5);
-  appState.ledAutoOffTime = preferences.getUChar("led_time", 10);
-  appState.selectedFontIndex = preferences.getUChar("font_idx", 0);
-  appState.currentTrackIndex = preferences.getUChar("track_idx", 0);
-  appState.batAdcMin = preferences.getUShort("bat_min", BAT_ADC_MIN_DEFAULT);
-  appState.batAdcMax = preferences.getUShort("bat_max", BAT_ADC_MAX_DEFAULT);
-  appState.longPressMs = preferences.getULong("long_press_ms", LONG_PRESS_MS_DEFAULT);
-  appState.ntpDisabled = preferences.getBool("ntp_disabled", false);
-  appState.ntpSynced = preferences.getBool("ntp_synced", false);
-  appState.lastNtpSyncTime = preferences.getULong("last_ntp", 0);
-  appState.bluetoothEnabled = preferences.getBool("bt_enabled", false);
+  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+  stateManager.begin();
+  if (wakeup_reason == ESP_SLEEP_WAKEUP_UNDEFINED) {
+      stateManager.loadAll(appState);
+  }
   
   Serial.printf("[SETUP] Configurazione caricata - Vol:%d Snooze:%d AutoStop:%d LED_Bri:%d LongPress:%lums NTP:%s\n", 
                 appState.alarmVolume, appState.snoozeTime, appState.autoStopTime, 
                 appState.ledBrightness, appState.longPressMs,
                 appState.ntpDisabled ? "DISAB" : (appState.ntpSynced ? "OK" : "PENDING"));
-
-  // Carica in RAM tutte le 9 sveglie sovrascrivendo i default se presenti in memoria
-  loadAlarms();
 
   // Inizializza il bus I2C (usato da RTC e Sensore Ambientale)
   Wire.begin(I2C_SDA, I2C_SCL);
@@ -581,7 +476,7 @@ void setup() {
 
   // Inizializza hardware di Input e Output prima del controllo sveglia
   Serial.println("[SETUP] Inizializzando Input, LED, Audio...");
-  input_init(BTN_A_PIN, BTN_B_PIN, appState.longPressMs);
+  input_init(BTN_A_PIN, BTN_B_PIN, RTC_INT_PIN, appState.longPressMs);
   led_init(LED_PWM_PIN);
   initAudio(); // Inizializza LittleFS, I2S e disattiva l'amplificatore
   initDisplay(); // Inizializza il bus SPI e i pin del display per il flusso normale
@@ -608,75 +503,93 @@ void setup() {
   pinMode(RTC_INT_PIN, INPUT_PULLUP);
 
   // Esegue le logiche di controllo iniziali come se si fosse appena svegliato da Light Sleep
-  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+  wakeup_reason = esp_sleep_get_wakeup_cause();
   performWakeupTasks(wakeup_reason);
 
   Serial.println("Setup hardware di base completato. Entro in loop...");
 }
 
 void loop() {
+  // Calcolo del timeout di inattività in millisecondi per determinare
+  // quanto tempo possiamo bloccare la CPU nella coda RTOS.
+  int64_t now_us = esp_timer_get_time();
+  uint32_t sleep_ms = portMAX_DELAY;
+  
+  if (appState.currentScreen != SCREEN_HOME || ledState || appState.bluetoothEnabled) {
+      int64_t next_timeout_us = lastActivityTime + INACTIVITY_TIMEOUT_US;
+      
+      if (appState.currentScreen == SCREEN_HOME && ledState) {
+          next_timeout_us = lastActivityTime + ((int64_t)appState.ledAutoOffTime * 1000000LL);
+      }
+      if (appState.bluetoothEnabled && appState.currentScreen == SCREEN_HOME && !appState.bluetoothConnected) {
+          int64_t bt_timeout = lastActivityTime + 300000000LL; // 5 minuti
+          if (bt_timeout < next_timeout_us) next_timeout_us = bt_timeout;
+      }
+      
+      if (next_timeout_us > now_us) {
+          sleep_ms = (next_timeout_us - now_us) / 1000;
+      } else {
+          sleep_ms = 0;
+      }
+  } else {
+      int64_t next_timeout_us = lastActivityTime + INACTIVITY_TIMEOUT_US;
+      if (next_timeout_us > now_us) {
+          sleep_ms = (next_timeout_us - now_us) / 1000;
+      } else {
+          sleep_ms = 0;
+      }
+  }
+
+  // Non dormiamo mai oltre i 5 secondi per garantire che il watchdog_feed non scada (max 15s)
+  if (sleep_ms > 5000) sleep_ms = 5000;
+
+  // IL CUORE DEL REFACTORING: L'ESP32 va in IDLE e blocca il core (RISPARMIO ENERGETICO MAXIMO!)
+  InputEvent event = input_get_event(sleep_ms);
+  
+  // Appena sveglio, diamo da mangiare al cane
   watchdog_feed();
-  // Lettura non bloccante dei pulsanti tramite la libreria input
-  InputEvent event = input_update();
 
-  if (event != INPUT_NONE) {
-    lastActivityTime = esp_timer_get_time(); // Resetta il timer di inattività
-    Serial.printf("[INPUT] Evento: %d (Home:%d Menu:%d) ora %02d:%02d\n", event, appState.currentScreen == SCREEN_HOME, appState.currentScreen == SCREEN_MENU, appState.hour, appState.minute);
-    
-    handleMenu(appState, event); // Passa l'evento al gestore del menu
-    
-    ui_update(appState);
-  }
-
-  // --- GESTIONE BACKGROUND RTC ---
-  // Dato che l'ESP32 non entra in Light Sleep se l'utente naviga nel menu o usa il BT,
-  // controlliamo l'interrupt fisico dell'RTC per intercettare lo scatto infallibile della sveglia.
-  if (digitalRead(RTC_INT_PIN) == LOW) {
-      Serial.println("[BACKGROUND] Rilevato segnale RTC (Minuto o Sveglia)!");
+  if (event == INPUT_RTC_WAKEUP) {
+      Serial.println("[BACKGROUND] Evento RTC ricevuto (Minuto o Sveglia)!");
       performWakeupTasks(ESP_SLEEP_WAKEUP_GPIO);
+  } else if (event != INPUT_NONE) {
+      lastActivityTime = esp_timer_get_time(); // Resetta timer inattività
+      Serial.printf("[INPUT] Evento: %d (Home:%d Menu:%d) ora %02d:%02d\n", event, appState.currentScreen == SCREEN_HOME, appState.currentScreen == SCREEN_MENU, appState.hour, appState.minute);
+      handleMenu(appState, event); 
+      ui_update(appState);
   }
+
+  // Rieseguo la misurazione del tempo per gestire i timeout
+  now_us = esp_timer_get_time();
 
   // --- GESTIONE TIMEOUT LED E SLEEP ---
-  
-  // 1. Controllo spegnimento indipendente del LED (se siamo nella Home)
   if (appState.currentScreen == SCREEN_HOME && ledState) {
-      if (esp_timer_get_time() - lastActivityTime > ((int64_t)appState.ledAutoOffTime * 1000000LL)) {
+      if (now_us - lastActivityTime > ((int64_t)appState.ledAutoOffTime * 1000000LL)) {
           Serial.printf("[TIMEOUT] LED acceso da troppo tempo. Spegnimento automatico (%ds).\n", appState.ledAutoOffTime);
           ledState = false;
           led_off(true); // Fade sempre attivo
           scheduleScreenUpdate();
           ui_update(appState);
-          // Resettiamo il timer di inattività affinché il display
-          // rimanga visibile (senza led) per i normali 30 secondi prima del Light Sleep
-          lastActivityTime = esp_timer_get_time();
+          lastActivityTime = now_us;
       }
   }
 
-  // 2. Controllo timer di uscita menù e sleep generale (30 secondi)
-  if (esp_timer_get_time() - lastActivityTime > INACTIVITY_TIMEOUT_US) {
-      // Se eravamo in un menù, forziamo l'uscita alla schermata Home
+  if (now_us - lastActivityTime > INACTIVITY_TIMEOUT_US) {
       if (appState.currentScreen != SCREEN_HOME) {
           Serial.println("[TIMEOUT] Inattività nel menù: ritorno alla Home automatico.");
           appState.currentScreen = SCREEN_HOME;
-          appState.isEditingAlarm = false; // Chiude in sicurezza eventuali modifiche in sospeso
-          
-          ui_update(appState); // Disegna fisicamente l'orologio sul display prima dello sleep
-          
-          // Resettiamo il timer. Se la luce è accesa, verrà gestita dal suo timeout 
-          // naturale della Home (es. 10s) per evitare spegnimenti bruschi e glitch.
-          lastActivityTime = esp_timer_get_time();
-      }
-      else {
-          // Gestione energetica con Bluetooth (il loop resta sempre vigile se BT è attivo)
+          appState.isEditingAlarm = false; 
+          ui_update(appState); 
+          lastActivityTime = now_us;
+      } else {
           if (appState.bluetoothEnabled) {
-              // Spegnimento automatico del BT dopo 5 min (300 sec) se NON è connesso a nulla
-              if (!appState.bluetoothConnected && (esp_timer_get_time() - lastActivityTime > 300000000LL)) {
+              if (!appState.bluetoothConnected && (now_us - lastActivityTime > 300000000LL)) {
                   Serial.println("[TIMEOUT] Bluetooth non connesso per 5 minuti. Spegnimento automatico.");
                   appState.bluetoothEnabled = false;
-                  preferences.putBool("bt_enabled", false);
+                  stateManager.setBluetoothEnabled(appState, false);
                   toggleBluetooth(false, "");
-                  ui_update(appState); // Aggiorna graficamente UI per mostrare 'Disattivato'
-                  lastActivityTime = esp_timer_get_time(); // Resetta per permettere lo spegnimento al prossimo ciclo
+                  ui_update(appState); 
+                  lastActivityTime = now_us; 
               }
           } else if (appState.currentScreen == SCREEN_HOME && !ledState) {
               goToLightSleep();

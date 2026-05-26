@@ -5,22 +5,19 @@
 #include "../audio/audio.h"
 #include "../input/input.h"
 #include "../watchdog/watchdog.h"
-#include <Preferences.h>
+#include "../state/StateManager.h"
 #include "../alarm/alarm.h"
 
-extern Preferences preferences;  // Assumiamo sia globale
 extern bool ledState;  // Da main
 extern int64_t lastActivityTime;  // Da main aggiornato a 64-bit
 
 // Funzioni esterne da main
 extern void scheduleScreenUpdate();
-extern void saveAllAlarms();
 
 extern void triggerManualNtpSync(SystemState &state);
 extern void toggleBluetooth(bool enable, const char* deviceName);
-extern void deleteAlarm(uint8_t index);
 
-extern bool isSnoozeActive; // Importazione per abbattere lo snooze
+
 
 extern char trackNames[NUM_TRACKS][64];
 extern uint8_t actualNumTracks; // Dichiarazione corretta
@@ -85,24 +82,24 @@ void handleMenu(SystemState &appState, InputEvent event) {
                 switch (appState.menuItemIndex) {
                     case 0: // Sveglie Globali (ON/OFF)
                         appState.alarmsGloballyEnabled = !appState.alarmsGloballyEnabled;
-                        preferences.putBool("al_global", appState.alarmsGloballyEnabled);
+                        stateManager.setAlarmsGloballyEnabled(appState, appState.alarmsGloballyEnabled);
                         calculateNextAlarm(appState); // Ricalcola per aggiornare o svuotare l'RTC
                         break;
                     case 1: // Volume Sveglia (1-10)
                         appState.alarmVolume = (appState.alarmVolume % 10) + 1;
-                        preferences.putUChar("vol", appState.alarmVolume);
+                        stateManager.setAlarmVolume(appState, appState.alarmVolume);
                         break;
                     case 2: // Snooze Time (1-20)
                         appState.snoozeTime = (appState.snoozeTime % 20) + 1;
-                        preferences.putUChar("snooze", appState.snoozeTime);
+                        stateManager.setSnoozeTime(appState, appState.snoozeTime);
                         break;
                     case 3: // Auto-Stop Time (1-5)
                         appState.autoStopTime = (appState.autoStopTime % 5) + 1;
-                        preferences.putUChar("autostop", appState.autoStopTime);
+                        stateManager.setAutoStopTime(appState, appState.autoStopTime);
                         break;
                     case 4: // Sincronizzazione NTP automatica (ON/OFF)
                         appState.ntpDisabled = !appState.ntpDisabled;
-                        preferences.putBool("ntp_disabled", appState.ntpDisabled);
+                        stateManager.setNtpDisabled(appState, appState.ntpDisabled);
                         Serial.printf("[MENU] Sincronizzazione NTP: %s\n", appState.ntpDisabled ? "DISABILITATA" : "ABILITATA");
                         if (appState.ntpDisabled) {
                             strncpy(appState.wifiStatus, "✗ Disabilit.", sizeof(appState.wifiStatus) - 1);
@@ -119,23 +116,23 @@ void handleMenu(SystemState &appState, InputEvent event) {
                         break;
                     case 6: // Luminosità LED (Spostato qui)
                         appState.ledBrightness = (appState.ledBrightness + 1) % 11;
-                        preferences.putUChar("led_bri", appState.ledBrightness);
+                        stateManager.setLedBrightness(appState, appState.ledBrightness);
                         if (ledState) led_on(appState.ledBrightness, false); // Variazione istantanea nel menù
                         break;
                     case 7: // Auto-Spegnimento LED (Spostato qui)
                         appState.ledAutoOffTime = (appState.ledAutoOffTime >= 30) ? 5 : appState.ledAutoOffTime + 5;
-                        preferences.putUChar("led_time", appState.ledAutoOffTime);
+                        stateManager.setLedAutoOffTime(appState, appState.ledAutoOffTime);
                         break;
                     case 8: // Font UI
                         appState.selectedFontIndex = (appState.selectedFontIndex + 1) % 3;
-                        preferences.putUChar("font_idx", appState.selectedFontIndex);
+                        stateManager.setFontIndex(appState, appState.selectedFontIndex);
                         Serial.printf("[MENU] Font selezionato: %d\n", appState.selectedFontIndex);
                         break;
                 }
             } else if (appState.menuCursorIndex == 2) { // Tracce
                 // 1. Salva l'indice della traccia selezionata istantaneamente
                 appState.currentTrackIndex = appState.menuItemIndex;
-                preferences.putUChar("track_idx", appState.currentTrackIndex);
+                stateManager.setTrackIndex(appState, appState.currentTrackIndex);
 
                 // 2. Imposta l'UI in modalità "Riproduzione" (mostrerà il quadratino STOP)
                 appState.isPreviewPlaying = true;
@@ -163,7 +160,7 @@ void handleMenu(SystemState &appState, InputEvent event) {
                             }
 
                             // Qualsiasi tasto (incluso B corto o B lungo) intercetterà e fermerà
-                            InputEvent stopEvent = input_update();
+                            InputEvent stopEvent = input_get_event(0);
                             if (stopEvent != INPUT_NONE) {
                                 Serial.println("[MENU] Anteprima interrotta dall'utente.");
                                 break;
@@ -192,7 +189,7 @@ void handleMenu(SystemState &appState, InputEvent event) {
                 switch (appState.menuItemIndex) {
                     case 0: // Abilita Bluetooth
                         appState.bluetoothEnabled = !appState.bluetoothEnabled;
-                        preferences.putBool("bt_enabled", appState.bluetoothEnabled);
+                        stateManager.setBluetoothEnabled(appState, appState.bluetoothEnabled);
                         toggleBluetooth(appState.bluetoothEnabled, "Sveglia Smart");
                         break;
                     case 1: // Dispositivi associati
@@ -208,8 +205,8 @@ void handleMenu(SystemState &appState, InputEvent event) {
                     uint8_t idx = appState.menuItemIndex;
                     if (appState.alarmEditFieldIndex == 3) {
                         // Elimina la sveglia
-                        isSnoozeActive = false; // Cancella eventuali snooze in corso
-                        deleteAlarm(idx);
+                        appState.isSnoozeActive = false; // Cancella eventuali snooze in corso
+                        stateManager.deleteAlarm(appState, idx);
                         appState.isEditingAlarm = false;
                         appState.alarmEditFieldIndex = 0;
                     } else {
@@ -220,8 +217,8 @@ void handleMenu(SystemState &appState, InputEvent event) {
                         } else if (appState.alarmEditFieldIndex == 2) {
                             appState.alarms[idx].recurrence = (AlarmRecurrence)((appState.alarms[idx].recurrence + 1) % 4);
                         }
-                        saveAllAlarms();
-                        isSnoozeActive = false; // Cancella snooze fantasma se l'utente agisce
+                        stateManager.saveAllAlarms(appState);
+                        appState.isSnoozeActive = false; // Cancella snooze fantasma se l'utente agisce
                         calculateNextAlarm(appState);
                     }
                 } else {
@@ -235,13 +232,13 @@ void handleMenu(SystemState &appState, InputEvent event) {
                         appState.alarms[idx].recurrence = ALARM_DAILY;
                         appState.isEditingAlarm = true;
                         appState.alarmEditFieldIndex = 0;
-                        saveAllAlarms();
-                        isSnoozeActive = false;
+                        stateManager.saveAllAlarms(appState);
+                        appState.isSnoozeActive = false;
                         calculateNextAlarm(appState);
                     } else {
                         appState.alarms[idx].active = !appState.alarms[idx].active;
-                        saveAllAlarms();
-                        isSnoozeActive = false;
+                        stateManager.saveAllAlarms(appState);
+                        appState.isSnoozeActive = false;
                         calculateNextAlarm(appState);
                     }
                 }
@@ -263,24 +260,24 @@ void handleMenu(SystemState &appState, InputEvent event) {
                 switch (appState.menuItemIndex) {
                     case 0: // Sveglie Globali (ON/OFF)
                         appState.alarmsGloballyEnabled = !appState.alarmsGloballyEnabled;
-                        preferences.putBool("al_global", appState.alarmsGloballyEnabled);
+                        stateManager.setAlarmsGloballyEnabled(appState, appState.alarmsGloballyEnabled);
                         calculateNextAlarm(appState); 
                         break;
                     case 1: // Volume Sveglia (1-10) scorrimento indietro
                         appState.alarmVolume = (appState.alarmVolume <= 1) ? 10 : appState.alarmVolume - 1;
-                        preferences.putUChar("vol", appState.alarmVolume);
+                        stateManager.setAlarmVolume(appState, appState.alarmVolume);
                         break;
                     case 2: // Snooze Time (1-20) scorrimento indietro
                         appState.snoozeTime = (appState.snoozeTime <= 1) ? 20 : appState.snoozeTime - 1;
-                        preferences.putUChar("snooze", appState.snoozeTime);
+                        stateManager.setSnoozeTime(appState, appState.snoozeTime);
                         break;
                     case 3: // Auto-Stop Time (1-5) scorrimento indietro
                         appState.autoStopTime = (appState.autoStopTime <= 1) ? 5 : appState.autoStopTime - 1;
-                        preferences.putUChar("autostop", appState.autoStopTime);
+                        stateManager.setAutoStopTime(appState, appState.autoStopTime);
                         break;
                     case 4: // Sincronizzazione NTP automatica (ON/OFF)
                         appState.ntpDisabled = !appState.ntpDisabled;
-                        preferences.putBool("ntp_disabled", appState.ntpDisabled);
+                        stateManager.setNtpDisabled(appState, appState.ntpDisabled);
                         Serial.printf("[MENU] Sincronizzazione NTP: %s\n", appState.ntpDisabled ? "DISABILITATA" : "ABILITATA");
                         if (appState.ntpDisabled) {
                             strncpy(appState.wifiStatus, "✗ Disabilit.", sizeof(appState.wifiStatus) - 1);
@@ -297,16 +294,16 @@ void handleMenu(SystemState &appState, InputEvent event) {
                         break;
                     case 6: // Luminosità LED (0-10) scorrimento indietro
                         appState.ledBrightness = (appState.ledBrightness == 0) ? 10 : appState.ledBrightness - 1;
-                        preferences.putUChar("led_bri", appState.ledBrightness);
+                        stateManager.setLedBrightness(appState, appState.ledBrightness);
                         if (ledState) led_on(appState.ledBrightness, false); 
                         break;
                     case 7: // Auto-Spegnimento LED scorrimento indietro
                         appState.ledAutoOffTime = (appState.ledAutoOffTime <= 5) ? 30 : appState.ledAutoOffTime - 5;
-                        preferences.putUChar("led_time", appState.ledAutoOffTime);
+                        stateManager.setLedAutoOffTime(appState, appState.ledAutoOffTime);
                         break;
                     case 8: // Font UI
                         appState.selectedFontIndex = (appState.selectedFontIndex + 2) % 3; // Corrisponde a -1 su base 3
-                        preferences.putUChar("font_idx", appState.selectedFontIndex);
+                        stateManager.setFontIndex(appState, appState.selectedFontIndex);
                         Serial.printf("[MENU] Font selezionato: %d\n", appState.selectedFontIndex);
                         break;
                 }
@@ -316,8 +313,8 @@ void handleMenu(SystemState &appState, InputEvent event) {
                     uint8_t idx = appState.menuItemIndex;
                     if (appState.alarmEditFieldIndex == 3) {
                         // Elimina la sveglia anche con pressione lunga per coerenza
-                        isSnoozeActive = false; // Cancella eventuali snooze in corso
-                        deleteAlarm(idx);
+                        appState.isSnoozeActive = false; // Cancella eventuali snooze in corso
+                        stateManager.deleteAlarm(appState, idx);
                         appState.isEditingAlarm = false;
                         appState.alarmEditFieldIndex = 0;
                     } else {
@@ -328,8 +325,8 @@ void handleMenu(SystemState &appState, InputEvent event) {
                         } else if (appState.alarmEditFieldIndex == 2) {
                             appState.alarms[idx].recurrence = (AlarmRecurrence)((appState.alarms[idx].recurrence + 3) % 4); // Ricorrenza precedente
                         }
-                        saveAllAlarms();
-                        isSnoozeActive = false; // Cancella snooze fantasma anche se si scorre indietro
+                        stateManager.saveAllAlarms(appState);
+                        appState.isSnoozeActive = false; // Cancella snooze fantasma anche se si scorre indietro
                         calculateNextAlarm(appState);
                     }
                 } else {
@@ -342,8 +339,8 @@ void handleMenu(SystemState &appState, InputEvent event) {
                         appState.alarms[idx].minute = 0;
                         appState.alarms[idx].active = true;
                         appState.alarms[idx].recurrence = ALARM_DAILY;
-                        saveAllAlarms();
-                        isSnoozeActive = false;
+                        stateManager.saveAllAlarms(appState);
+                        appState.isSnoozeActive = false;
                         calculateNextAlarm(appState);
                     }
                     appState.isEditingAlarm = true;

@@ -14,11 +14,7 @@ extern char trackNames[NUM_TRACKS][64];
 extern uint8_t actualNumTracks;
 extern void toggleBluetooth(bool enable, const char* deviceName);
 extern void ui_update(const SystemState& newState, bool forceFullRefresh);
-
-// Importo le variabili di stato per lo Snooze da main.cpp
-extern bool isSnoozeActive;
-extern uint8_t snoozeTargetHour;
-extern uint8_t snoozeTargetMinute;
+extern void ui_update(const SystemState& newState, bool forceFullRefresh);
 
 void handleAlarm(SystemState &appState) {
     Serial.println("Inizio ciclo riproduzione Audio/LED (BLOCCANTE)!");
@@ -123,7 +119,7 @@ void handleAlarm(SystemState &appState) {
             }
         }
 
-        InputEvent event = input_update();
+        InputEvent event = input_get_event(0);
         
         // Tasto A (Corto o Lungo) -> SNOOZE
         if (event == INPUT_BTN_A_SHORT || event == INPUT_BTN_A_LONG) {
@@ -174,9 +170,9 @@ void handleAlarm(SystemState &appState) {
         int nextM = snoozeMins % 60;
         
         // Salvo globalmente le informazioni per lo Snooze
-        isSnoozeActive = true;
-        snoozeTargetHour = nextH;
-        snoozeTargetMinute = nextM;
+        appState.isSnoozeActive = true;
+        appState.snoozeTargetHour = nextH;
+        appState.snoozeTargetMinute = nextM;
 
         Serial.printf("Snooze attivato. Prossima suoneria alle %02d:%02d (Locale)\n", nextH, nextM);
         
@@ -184,14 +180,14 @@ void handleAlarm(SystemState &appState) {
         // e l'entrata naturale in Light Sleep, evitando un brutale reboot da Deep Sleep.
         return;
     } else {
-        isSnoozeActive = false; // Assicura che lo snooze sia resettato in caso di Stop
+        appState.isSnoozeActive = false; // Assicura che lo snooze sia resettato in caso di Stop
     }
 }
 
 void calculateNextAlarm(SystemState &appState) {
     if (!appState.alarmsGloballyEnabled) {
         Serial.println("Sveglie globalmente disattivate. Nessun allarme inviato all'RTC.");
-        isSnoozeActive = false; // Azzera lo snooze se l'utente spegne tutte le sveglie
+        appState.isSnoozeActive = false; // Azzera lo snooze se l'utente spegne tutte le sveglie
         rtc.disableAlarm(2);
         rtc.clearAlarm(2);
         appState.nextAlarmFound = false; // Rimuove l'icona della sveglia dalla schermata Home
@@ -203,15 +199,15 @@ void calculateNextAlarm(SystemState &appState) {
     struct tm* local_timeinfo = localtime(&utc_epoch);
 
     // SCUDO: Se c'è uno snooze in corso, bypasso il calcolo e aggiorno la UI
-    if (isSnoozeActive) {
-        Serial.printf("[ALARM] Snooze in corso. Mantengo Allarme 2 alle %02d:%02d\n", snoozeTargetHour, snoozeTargetMinute);
+    if (appState.isSnoozeActive) {
+        Serial.printf("[ALARM] Snooze in corso. Mantengo Allarme 2 alle %02d:%02d\n", appState.snoozeTargetHour, appState.snoozeTargetMinute);
         appState.nextAlarmFound = true;
-        appState.nextAlarmHour = snoozeTargetHour;
-        appState.nextAlarmMinute = snoozeTargetMinute;
+        appState.nextAlarmHour = appState.snoozeTargetHour;
+        appState.nextAlarmMinute = appState.snoozeTargetMinute;
         
         struct tm target_time = *local_timeinfo;
-        target_time.tm_hour = snoozeTargetHour;
-        target_time.tm_min = snoozeTargetMinute;
+        target_time.tm_hour = appState.snoozeTargetHour;
+        target_time.tm_min = appState.snoozeTargetMinute;
         target_time.tm_sec = 0;
         target_time.tm_isdst = -1; // Forza la rivalutazione DST per il futuro
         
