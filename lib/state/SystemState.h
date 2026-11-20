@@ -1,16 +1,17 @@
 #ifndef SYSTEM_STATE_H
 #define SYSTEM_STATE_H
 
-#include <Arduino.h>
+#include <stdint.h>
+#include <time.h>
 
-enum ScreenType {
+enum ScreenType : uint8_t {
     SCREEN_HOME = 0,
     SCREEN_MENU,
     SCREEN_ALARM
 };
 
 // Tipi di ricorrenza per la singola sveglia
-enum AlarmRecurrence {
+enum AlarmRecurrence : uint8_t {
     ALARM_SINGLE = 0,   // Suona una volta sola e si disattiva
     ALARM_DAILY,        // Tutti i giorni
     ALARM_WEEKDAYS,     // Feriali (Lunedì - Venerdì)

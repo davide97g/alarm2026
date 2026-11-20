@@ -3,3 +3,6 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# Credenziali WiFi locali (template: src/secrets.h.example)
+src/secrets.h

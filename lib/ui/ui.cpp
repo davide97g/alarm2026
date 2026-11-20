@@ -8,7 +8,6 @@
 #include "../../include/config.h"
 #include <time.h>
 // Inclusione dei font predefiniti di Adafruit_GFX
-#include <Fonts/FreeSansBold24pt7b.h>
 #include <Fonts/FreeSans9pt7b.h>
 // Aggiungi qui gli include per font personalizzati, es. #include "fonts/Arial12pt.h"
 #include <esp_attr.h>
@@ -20,6 +19,7 @@
 #include "../fonts/Futura_Medium_onlynumbers112pt7b.h"
 
 #include "../audio/audio.h" // Per accedere all'array trackWaveforms
+#include "../logic/logic.h"
 
 const GFXfont* fonts[] = {
     &FreeSans9pt7b,                       // 0: Font di default ESP32
@@ -105,83 +105,17 @@ void ui_init() {
 }
 
 void ui_update(const SystemState& newState, bool forceFullRefresh) {
-    bool needsUpdate = forceFullRefresh;
-    bool exitingMenu = false;
-
-    if (newState.currentScreen != lastDrawnState.currentScreen) {
-        needsUpdate = true;
-        if (lastDrawnState.currentScreen == SCREEN_MENU && newState.currentScreen == SCREEN_HOME) {
-            exitingMenu = true;
-        }
-        Serial.printf("[UI] Cambio schermata: %s -> %s\n", 
+    // Cosa è cambiato e se serve ridisegnare: lib/logic (testato su host)
+    UiDecision d = uiDecide(newState, lastDrawnState, forceFullRefresh);
+    if (d.screenChanged) {
+        Serial.printf("[UI] Cambio schermata: %s -> %s\n",
                      lastDrawnState.currentScreen == SCREEN_HOME ? "HOME" : "MENU",
                      newState.currentScreen == SCREEN_HOME ? "HOME" : "MENU");
     }
-
-        // Aggiorna se cambia il minuto, temperatura, o batteria (sulla HOME)
-        if (newState.currentScreen == SCREEN_HOME) {
-            if (newState.minute != lastDrawnState.minute ||
-                abs(newState.temperature - lastDrawnState.temperature) >= 0.5 ||
-                newState.batteryPercent != lastDrawnState.batteryPercent ||
-                newState.day != lastDrawnState.day || // Aggiorna se cambia il giorno
-                newState.nextAlarmFound != lastDrawnState.nextAlarmFound || // Aggiorna se una sveglia viene attivata/disattivata
-                newState.nextAlarmHour != lastDrawnState.nextAlarmHour ||
-                newState.nextAlarmMinute != lastDrawnState.nextAlarmMinute ||
-                newState.ntpSynced != lastDrawnState.ntpSynced) { // Aggiorna se cambia stato icona WiFi
-                needsUpdate = true;
-            }
-        }
-        // Aggiorna se l'utente si muove su/giù nel menù
-        else if (newState.currentScreen == SCREEN_MENU) {
-            bool alarmsChanged = false;
-            for (int i = 0; i < 16; i++) {
-                if (newState.alarms[i].hour != lastDrawnState.alarms[i].hour ||
-                    newState.alarms[i].minute != lastDrawnState.alarms[i].minute ||
-                    newState.alarms[i].active != lastDrawnState.alarms[i].active ||
-                    newState.alarms[i].recurrence != lastDrawnState.alarms[i].recurrence) {
-                    alarmsChanged = true;
-                    break;
-                }
-            }
-
-            if (newState.menuCursorIndex != lastDrawnState.menuCursorIndex ||
-                newState.menuItemIndex != lastDrawnState.menuItemIndex ||
-                newState.isEditingAlarm != lastDrawnState.isEditingAlarm ||
-                newState.alarmEditFieldIndex != lastDrawnState.alarmEditFieldIndex ||
-                // Aggiungiamo il controllo sui valori per ridisegnare quando vengono modificati
-                newState.numConfiguredAlarms != lastDrawnState.numConfiguredAlarms ||
-                newState.alarmVolume != lastDrawnState.alarmVolume ||
-                newState.snoozeTime != lastDrawnState.snoozeTime ||
-                newState.autoStopTime != lastDrawnState.autoStopTime ||
-                newState.alarmsGloballyEnabled != lastDrawnState.alarmsGloballyEnabled ||
-                newState.ledBrightness != lastDrawnState.ledBrightness ||
-                newState.ledAutoOffTime != lastDrawnState.ledAutoOffTime ||
-                newState.audioError != lastDrawnState.audioError ||
-                newState.isPreviewPlaying != lastDrawnState.isPreviewPlaying ||
-                abs(newState.batteryVoltage - lastDrawnState.batteryVoltage) > 0.01 || // Aggiunto per aggiornare il voltaggio
-                newState.currentTrackIndex != lastDrawnState.currentTrackIndex || // Mancava!
-                newState.selectedFontIndex != lastDrawnState.selectedFontIndex || // Mancava!
-                newState.ntpDisabled != lastDrawnState.ntpDisabled ||             // Mancava!
-                strcmp(newState.wifiStatus, lastDrawnState.wifiStatus) != 0 ||    // Mancava!
-                newState.bluetoothEnabled != lastDrawnState.bluetoothEnabled ||   // Mancava BT!
-                newState.bluetoothConnected != lastDrawnState.bluetoothConnected || // Mancava BT!
-                strcmp(newState.bluetoothDeviceName, lastDrawnState.bluetoothDeviceName) != 0 || // Mancava BT!
-                newState.pairedDevicesCount != lastDrawnState.pairedDevicesCount || // Mancava Dispositivi BT!
-                newState.lastNtpSyncTime != lastDrawnState.lastNtpSyncTime ||
-                alarmsChanged) {
-                needsUpdate = true;
-            }
-        }
-        // Aggiorna la schermata allarme se scatta il minuto durante la suoneria
-        else if (newState.currentScreen == SCREEN_ALARM) {
-            if (newState.minute != lastDrawnState.minute) {
-                needsUpdate = true;
-            }
-        }
-
-    if (!needsUpdate) {
-        return; 
+    if (!d.needsUpdate) {
+        return;
     }
+    bool exitingMenu = d.exitingMenu;
 
     if (forceFullRefresh || exitingMenu) {
         Serial.println("[UI] Esecuzione Full Refresh...");

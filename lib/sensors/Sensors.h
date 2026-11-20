@@ -13,11 +13,12 @@ extern bool bmeValid;
 extern bool rtcValid;
 
 void initSensors();
-void printEnvironment();
-void printTime();
+
+// Ora locale (fuso da TZ) letta dall'RTC, che lavora in UTC.
+// Se utcOut non è nullo riceve anche l'epoch UTC letto.
+struct tm rtcLocalTime(time_t* utcOut = nullptr);
 
 // --- Gestione Allarmi RTC (DS3231) ---
-void rtc_setupAlarm1_EveryMinute();
 void rtc_setupAlarm2(uint8_t hour, uint8_t minute);
 bool rtc_isAlarm1Fired();
 bool rtc_isAlarm2Fired();

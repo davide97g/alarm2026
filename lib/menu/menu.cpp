@@ -1,369 +1,260 @@
 #include "menu.h"
 #include "../../include/config.h"
-#include "../network/network.h"  // Per getWifiErrorMessage
 #include "../led/led.h"
 #include "../audio/audio.h"
 #include "../input/input.h"
 #include "../watchdog/watchdog.h"
 #include "../state/StateManager.h"
 #include "../alarm/alarm.h"
+#include "../logic/logic.h"
 
-extern bool ledState;  // Da main
-extern int64_t lastActivityTime;  // Da main aggiornato a 64-bit
-
-// Funzioni esterne da main
+extern bool ledState;            // main.cpp
+extern int64_t lastActivityTime; // main.cpp
 extern void scheduleScreenUpdate();
-
 extern void triggerManualNtpSync(SystemState &state);
-extern void toggleBluetooth(bool enable, const char* deviceName);
-
-
 
 extern char trackNames[NUM_TRACKS][64];
-extern uint8_t actualNumTracks; // Dichiarazione corretta
+extern uint8_t actualNumTracks;
 
-void handleMenu(SystemState &appState, InputEvent event) {
-    if (appState.currentScreen == SCREEN_HOME) {
+// Tasto A: riga successiva (dir=+1, corto) o precedente (dir=-1, lungo).
+// In modifica sveglia: A corto cambia campo, A lungo conferma ed esce.
+static void navigate(SystemState &s, int dir) {
+    if (s.menuCursorIndex == 1 && s.isEditingAlarm) {
+        if (dir > 0) s.alarmEditFieldIndex = (s.alarmEditFieldIndex + 1) % 4; // Ora -> Minuti -> Ricorrenza -> Cestino
+        else s.isEditingAlarm = false;
+        return;
+    }
+    uint8_t numItems = menuItemCount(s, actualNumTracks);
+    if (numItems == 0) return;
+    if (dir > 0) {
+        s.menuItemIndex = (s.menuItemIndex + 1) % numItems;
+        Serial.printf("[MENU] Navigazione: Cursore=%d ItemIndex=%d\n", s.menuCursorIndex, s.menuItemIndex);
+    } else {
+        s.menuItemIndex = (s.menuItemIndex + numItems - 1) % numItems;
+        Serial.printf("[MENU] Navigazione indietro: Cursore=%d ItemIndex=%d\n", s.menuCursorIndex, s.menuItemIndex);
+    }
+}
+
+// Scheda Impostazioni: B corto avanza il valore (fwd), B lungo lo fa tornare indietro
+static void changeSetting(SystemState &s, bool fwd) {
+    switch (s.menuItemIndex) {
+        case 0: // Sveglie globali ON/OFF
+            s.alarmsGloballyEnabled = !s.alarmsGloballyEnabled;
+            stateManager.setAlarmsGloballyEnabled(s, s.alarmsGloballyEnabled);
+            calculateNextAlarm(s); // Aggiorna o svuota l'RTC
+            break;
+        case 1: // Volume 1-10
+            s.alarmVolume = fwd ? (s.alarmVolume % 10) + 1 : (s.alarmVolume <= 1 ? 10 : s.alarmVolume - 1);
+            stateManager.setAlarmVolume(s, s.alarmVolume);
+            break;
+        case 2: // Snooze 1-20 min
+            s.snoozeTime = fwd ? (s.snoozeTime % 20) + 1 : (s.snoozeTime <= 1 ? 20 : s.snoozeTime - 1);
+            stateManager.setSnoozeTime(s, s.snoozeTime);
+            break;
+        case 3: // Auto-Stop 1-5 min
+            s.autoStopTime = fwd ? (s.autoStopTime % 5) + 1 : (s.autoStopTime <= 1 ? 5 : s.autoStopTime - 1);
+            stateManager.setAutoStopTime(s, s.autoStopTime);
+            break;
+        case 4: // Sincronizzazione NTP automatica ON/OFF
+            s.ntpDisabled = !s.ntpDisabled;
+            stateManager.setNtpDisabled(s, s.ntpDisabled);
+            Serial.printf("[MENU] Sincronizzazione NTP: %s\n", s.ntpDisabled ? "DISABILITATA" : "ABILITATA");
+            strncpy(s.wifiStatus, s.ntpDisabled ? "✗ Disabilit." : "↻ In attesa", sizeof(s.wifiStatus) - 1);
+            break;
+        case 5: // Forza sincro NTP
+            if (!s.ntpDisabled) triggerManualNtpSync(s);
+            else strncpy(s.wifiStatus, "✗ Abilita prima NTP", sizeof(s.wifiStatus) - 1);
+            break;
+        case 6: // Luminosità LED 0-10
+            s.ledBrightness = fwd ? (s.ledBrightness + 1) % 11 : (s.ledBrightness == 0 ? 10 : s.ledBrightness - 1);
+            stateManager.setLedBrightness(s, s.ledBrightness);
+            if (ledState) led_on(s.ledBrightness, false); // Variazione istantanea
+            break;
+        case 7: // Auto-spegnimento LED 5-30 s
+            s.ledAutoOffTime = fwd ? (s.ledAutoOffTime >= 30 ? 5 : s.ledAutoOffTime + 5)
+                                   : (s.ledAutoOffTime <= 5 ? 30 : s.ledAutoOffTime - 5);
+            stateManager.setLedAutoOffTime(s, s.ledAutoOffTime);
+            break;
+        case 8: // Font UI (3 font)
+            s.selectedFontIndex = (s.selectedFontIndex + (fwd ? 1 : 2)) % 3;
+            stateManager.setFontIndex(s, s.selectedFontIndex);
+            Serial.printf("[MENU] Font selezionato: %d\n", s.selectedFontIndex);
+            break;
+    }
+}
+
+// Scheda Tracce: seleziona la traccia e ne suona un'anteprima (bloccante, max 15 s)
+static void previewTrack(SystemState &s) {
+    s.currentTrackIndex = s.menuItemIndex;
+    stateManager.setTrackIndex(s, s.currentTrackIndex);
+
+    s.isPreviewPlaying = true; // La UI mostra il quadratino STOP
+    s.audioError = false;
+    ui_update(s);
+
+    if (actualNumTracks > 0) {
+        setVolume(s.alarmVolume);
+        if (!playMp3(trackNames[s.currentTrackIndex % actualNumTracks])) {
+            Serial.println("[MENU] Errore: impossibile riprodurre l'anteprima.");
+            s.audioError = true;
+        } else {
+            Serial.println("[MENU] Anteprima in corso. Premi un tasto (es. B) per fermare.");
+            int64_t previewStartUs = esp_timer_get_time();
+            while (true) {
+                watchdog_feed();
+                if (!loopAudio()) break; // Traccia finita
+                if (input_get_event(0) != INPUT_NONE) { // Qualsiasi tasto ferma
+                    Serial.println("[MENU] Anteprima interrotta dall'utente.");
+                    break;
+                }
+                if (esp_timer_get_time() - previewStartUs > 15000000LL) {
+                    Serial.println("[MENU] Timeout anteprima raggiunto.");
+                    break;
+                }
+                delay(2);
+            }
+            stopAudio();
+        }
+    } else {
+        s.audioError = true;
+    }
+
+    s.isPreviewPlaying = false;
+    ui_update(s);
+    lastActivityTime = esp_timer_get_time(); // Non spegnere subito il display
+}
+
+// Ogni modifica alle sveglie: salva, annulla snooze fantasma, riprogramma l'RTC
+static void commitAlarms(SystemState &s) {
+    stateManager.saveAllAlarms(s);
+    s.isSnoozeActive = false;
+    calculateNextAlarm(s);
+}
+
+// Nuova sveglia alle 07:00 tutti i giorni nello slot idx
+static void addAlarm(SystemState &s, uint8_t idx) {
+    s.numConfiguredAlarms++;
+    s.alarms[idx] = {7, 0, true, ALARM_DAILY};
+}
+
+// In modifica: B corto (fwd) aumenta il campo, B lungo lo diminuisce; sul cestino elimina
+static void editAlarm(SystemState &s, bool fwd) {
+    uint8_t idx = s.menuItemIndex;
+    Alarm &al = s.alarms[idx];
+    switch (s.alarmEditFieldIndex) {
+        case 3:
+            s.isSnoozeActive = false;
+            stateManager.deleteAlarm(s, idx);
+            s.isEditingAlarm = false;
+            s.alarmEditFieldIndex = 0;
+            return;
+        case 0: al.hour = (al.hour + (fwd ? 1 : 23)) % 24; break;
+        case 1: al.minute = (al.minute + (fwd ? 5 : 55)) % 60; break;
+        case 2: al.recurrence = (AlarmRecurrence)((al.recurrence + (fwd ? 1 : 3)) % 4); break;
+    }
+    commitAlarms(s);
+}
+
+// Scheda Bluetooth, B corto
+static void bluetoothAction(SystemState &s) {
+    switch (s.menuItemIndex) {
+        case 0:
+            s.bluetoothEnabled = !s.bluetoothEnabled;
+            stateManager.setBluetoothEnabled(s, s.bluetoothEnabled);
+            toggleBluetooth(s.bluetoothEnabled, "Sveglia Smart");
+            break;
+        case 1: // TODO: lista dispositivi (richiede UI aggiuntiva)
+            Serial.println("[BLUETOOTH] Richiesta visualizzazione dispositivi associati");
+            break;
+        case 2:
+            Serial.println("[BLUETOOTH] Tieni premuto B per confermare l'eliminazione");
+            break;
+    }
+}
+
+// Riga "+" in fondo alla lista sveglie (se c'è ancora uno slot libero)
+static bool onAddRow(const SystemState &s) {
+    return s.menuItemIndex == s.numConfiguredAlarms && s.menuItemIndex < 16;
+}
+
+void handleMenu(SystemState &s, InputEvent event) {
+    if (s.currentScreen == SCREEN_HOME) {
         if (event == INPUT_BTN_A_SHORT || event == INPUT_BTN_B_SHORT) {
-            // Accendi o spegni il LED per vedere l'ora di notte
+            // Luce notturna on/off
             ledState = !ledState;
             Serial.printf("Luce LED: %s\n", ledState ? "ACCESA" : "SPENTA");
-            if (ledState) {
-                led_on(appState.ledBrightness, true); // Usa l'impostazione per il fade in fissa a true
-                scheduleScreenUpdate();
-            } else {
-                led_off(true); // Fade out fisso a true
-                scheduleScreenUpdate();
-            }
+            if (ledState) led_on(s.ledBrightness, true);
+            else led_off(true);
+            scheduleScreenUpdate();
         }
-    } else if (appState.currentScreen == SCREEN_MENU) {
+    } else if (s.currentScreen == SCREEN_MENU) {
         if (event == INPUT_BTN_A_SHORT) {
-            // Tasto A: Naviga verticalmente le voci della scheda in loop
-            if (appState.menuCursorIndex == 1 && appState.isEditingAlarm) {
-                // Se siamo in modalità modifica sveglia, naviga tra Ora -> Minuti -> Ricorrenza -> Cestino
-                appState.alarmEditFieldIndex = (appState.alarmEditFieldIndex + 1) % 4;
-            } else {
-                uint8_t numItems = 0;
-                switch(appState.menuCursorIndex) {
-                    case 0: numItems = 9; break; // Impostazioni (9 voci)
-                    case 1: numItems = appState.numConfiguredAlarms < 16 ? appState.numConfiguredAlarms + 1 : 16; break; // Sveglie dinamiche
-                    case 2: numItems = actualNumTracks; break; // Tracce
-                    case 3: numItems = 3; break; // Bluetooth (3 Voci)
-                }
-
-                if (numItems > 0) {
-                    appState.menuItemIndex = (appState.menuItemIndex + 1) % numItems;
-                    Serial.printf("[MENU] Navigazione: Cursore=%d ItemIndex=%d\n", appState.menuCursorIndex, appState.menuItemIndex);
-                }
-            }
+            navigate(s, +1);
         } else if (event == INPUT_BTN_A_LONG) {
-            // Tasto A Lungo: Naviga indietro di uno step
-            if (appState.menuCursorIndex == 1 && appState.isEditingAlarm) {
-                // NUOVO COMANDO: A Lungo in modalità modifica CONFERMA ed ESCE
-                appState.isEditingAlarm = false;
-            } else {
-                uint8_t numItems = 0;
-                switch(appState.menuCursorIndex) {
-                    case 0: numItems = 9; break;
-                    case 1: numItems = appState.numConfiguredAlarms < 16 ? appState.numConfiguredAlarms + 1 : 16; break;
-                    case 2: numItems = actualNumTracks; break;
-                    case 3: numItems = 3; break;
-                }
-
-                if (numItems > 0) {
-                    appState.menuItemIndex = (appState.menuItemIndex + numItems - 1) % numItems;
-                    Serial.printf("[MENU] Navigazione indietro: Cursore=%d ItemIndex=%d\n", appState.menuCursorIndex, appState.menuItemIndex);
-                }
-            }
-        } else if (event == INPUT_BTN_B_SHORT || (event == INPUT_BTN_B_LONG && appState.menuCursorIndex == 2)) {
-            // Tasto B: Naviga le opzioni (nella scheda 2, B_LONG funge anch'esso da PLAY/STOP)
-            // Tasto B: Naviga le opzioni della singola voce del menù in loop
-            if (appState.menuCursorIndex == 0) { // Impostazioni                
-                switch (appState.menuItemIndex) {
-                    case 0: // Sveglie Globali (ON/OFF)
-                        appState.alarmsGloballyEnabled = !appState.alarmsGloballyEnabled;
-                        stateManager.setAlarmsGloballyEnabled(appState, appState.alarmsGloballyEnabled);
-                        calculateNextAlarm(appState); // Ricalcola per aggiornare o svuotare l'RTC
-                        break;
-                    case 1: // Volume Sveglia (1-10)
-                        appState.alarmVolume = (appState.alarmVolume % 10) + 1;
-                        stateManager.setAlarmVolume(appState, appState.alarmVolume);
-                        break;
-                    case 2: // Snooze Time (1-20)
-                        appState.snoozeTime = (appState.snoozeTime % 20) + 1;
-                        stateManager.setSnoozeTime(appState, appState.snoozeTime);
-                        break;
-                    case 3: // Auto-Stop Time (1-5)
-                        appState.autoStopTime = (appState.autoStopTime % 5) + 1;
-                        stateManager.setAutoStopTime(appState, appState.autoStopTime);
-                        break;
-                    case 4: // Sincronizzazione NTP automatica (ON/OFF)
-                        appState.ntpDisabled = !appState.ntpDisabled;
-                        stateManager.setNtpDisabled(appState, appState.ntpDisabled);
-                        Serial.printf("[MENU] Sincronizzazione NTP: %s\n", appState.ntpDisabled ? "DISABILITATA" : "ABILITATA");
-                        if (appState.ntpDisabled) {
-                            strncpy(appState.wifiStatus, "✗ Disabilit.", sizeof(appState.wifiStatus) - 1);
-                        } else {
-                            strncpy(appState.wifiStatus, "↻ In attesa", sizeof(appState.wifiStatus) - 1);
-                        }
-                        break;
-                    case 5: // Forza Sincro NTP
-                        if (!appState.ntpDisabled) {
-                            triggerManualNtpSync(appState);
-                        } else {
-                            strncpy(appState.wifiStatus, "✗ Abilita prima NTP", sizeof(appState.wifiStatus) - 1);
-                        }
-                        break;
-                    case 6: // Luminosità LED (Spostato qui)
-                        appState.ledBrightness = (appState.ledBrightness + 1) % 11;
-                        stateManager.setLedBrightness(appState, appState.ledBrightness);
-                        if (ledState) led_on(appState.ledBrightness, false); // Variazione istantanea nel menù
-                        break;
-                    case 7: // Auto-Spegnimento LED (Spostato qui)
-                        appState.ledAutoOffTime = (appState.ledAutoOffTime >= 30) ? 5 : appState.ledAutoOffTime + 5;
-                        stateManager.setLedAutoOffTime(appState, appState.ledAutoOffTime);
-                        break;
-                    case 8: // Font UI
-                        appState.selectedFontIndex = (appState.selectedFontIndex + 1) % 3;
-                        stateManager.setFontIndex(appState, appState.selectedFontIndex);
-                        Serial.printf("[MENU] Font selezionato: %d\n", appState.selectedFontIndex);
-                        break;
-                }
-            } else if (appState.menuCursorIndex == 2) { // Tracce
-                // 1. Salva l'indice della traccia selezionata istantaneamente
-                appState.currentTrackIndex = appState.menuItemIndex;
-                stateManager.setTrackIndex(appState, appState.currentTrackIndex);
-
-                // 2. Imposta l'UI in modalità "Riproduzione" (mostrerà il quadratino STOP)
-                appState.isPreviewPlaying = true;
-                appState.audioError = false;
-                ui_update(appState);
-
-                // 3. Avvia la riproduzione audio bloccante
-                if (actualNumTracks > 0) {
-                    setVolume(appState.alarmVolume);
-                    bool audioStarted = playMp3(trackNames[appState.currentTrackIndex % actualNumTracks]);
-                    
-                    if (!audioStarted) {
-                        Serial.println("[MENU] Errore: impossibile riprodurre l'anteprima.");
-                        appState.audioError = true;
+            navigate(s, -1);
+        } else if (event == INPUT_BTN_B_SHORT || (event == INPUT_BTN_B_LONG && s.menuCursorIndex == 2)) {
+            // B corto agisce sulla riga; nelle Tracce anche B lungo avvia/ferma l'anteprima
+            switch (s.menuCursorIndex) {
+                case 0: changeSetting(s, true); break;
+                case 2: previewTrack(s); break;
+                case 3: bluetoothAction(s); break;
+                case 1:
+                    if (s.isEditingAlarm) {
+                        editAlarm(s, true);
+                    } else if (onAddRow(s)) {
+                        addAlarm(s, s.menuItemIndex);
+                        s.isEditingAlarm = true;
+                        s.alarmEditFieldIndex = 0;
+                        commitAlarms(s);
                     } else {
-                        Serial.println("[MENU] Anteprima in corso. Premi un tasto (es. B) per fermare.");
-                        
-                        int64_t previewStartUs = esp_timer_get_time();
-                        
-                        while (true) {
-                            watchdog_feed();
-                            
-                            if (!loopAudio()) {
-                                break; // Traccia finita naturalmente
-                            }
-
-                            // Qualsiasi tasto (incluso B corto o B lungo) intercetterà e fermerà
-                            InputEvent stopEvent = input_get_event(0);
-                            if (stopEvent != INPUT_NONE) {
-                                Serial.println("[MENU] Anteprima interrotta dall'utente.");
-                                break;
-                            }
-
-                            // Timeout di sicurezza di 15 secondi (evita riproduzioni infinite nei menù)
-                            if (esp_timer_get_time() - previewStartUs > 15000000LL) {
-                                Serial.println("[MENU] Timeout anteprima raggiunto.");
-                                break;
-                            }
-
-                            delay(2);
-                        }
-                        
-                        stopAudio();
+                        s.alarms[s.menuItemIndex].active = !s.alarms[s.menuItemIndex].active;
+                        commitAlarms(s);
                     }
-                } else {
-                    appState.audioError = true;
-                }
-
-                // 4. Fine anteprima: ripristina UI
-                appState.isPreviewPlaying = false;
-                ui_update(appState);
-                lastActivityTime = esp_timer_get_time(); // Resetta lo sleep per non spegnere subito il display
-            } else if (appState.menuCursorIndex == 3) { // Bluetooth
-                switch (appState.menuItemIndex) {
-                    case 0: // Abilita Bluetooth
-                        appState.bluetoothEnabled = !appState.bluetoothEnabled;
-                        stateManager.setBluetoothEnabled(appState, appState.bluetoothEnabled);
-                        toggleBluetooth(appState.bluetoothEnabled, "Sveglia Smart");
-                        break;
-                    case 1: // Dispositivi associati
-                        // TODO: Implementare visualizzazione lista (Richiede UI aggiuntiva)
-                        Serial.println("[BLUETOOTH] Richiesta visualizzazione dispositivi associati");
-                        break;
-                    case 2: // Dimentica dispositivi (Hint: usa press lungo)
-                        Serial.println("[BLUETOOTH] Tieni premuto B per confermare l'eliminazione");
-                        break;
-                }
-            } else if (appState.menuCursorIndex == 1) { // Sveglie
-                if (appState.isEditingAlarm) {
-                    uint8_t idx = appState.menuItemIndex;
-                    if (appState.alarmEditFieldIndex == 3) {
-                        // Elimina la sveglia
-                        appState.isSnoozeActive = false; // Cancella eventuali snooze in corso
-                        stateManager.deleteAlarm(appState, idx);
-                        appState.isEditingAlarm = false;
-                        appState.alarmEditFieldIndex = 0;
-                    } else {
-                        if (appState.alarmEditFieldIndex == 0) {
-                            appState.alarms[idx].hour = (appState.alarms[idx].hour + 1) % 24;
-                        } else if (appState.alarmEditFieldIndex == 1) {
-                            appState.alarms[idx].minute = (appState.alarms[idx].minute + 5) % 60;
-                        } else if (appState.alarmEditFieldIndex == 2) {
-                            appState.alarms[idx].recurrence = (AlarmRecurrence)((appState.alarms[idx].recurrence + 1) % 4);
-                        }
-                        stateManager.saveAllAlarms(appState);
-                        appState.isSnoozeActive = false; // Cancella snooze fantasma se l'utente agisce
-                        calculateNextAlarm(appState);
-                    }
-                } else {
-                    uint8_t idx = appState.menuItemIndex;
-                    if (idx == appState.numConfiguredAlarms && idx < 16) {
-                        // ADD ALARM
-                        appState.numConfiguredAlarms++;
-                        appState.alarms[idx].hour = 7;
-                        appState.alarms[idx].minute = 0;
-                        appState.alarms[idx].active = true;
-                        appState.alarms[idx].recurrence = ALARM_DAILY;
-                        appState.isEditingAlarm = true;
-                        appState.alarmEditFieldIndex = 0;
-                        stateManager.saveAllAlarms(appState);
-                        appState.isSnoozeActive = false;
-                        calculateNextAlarm(appState);
-                    } else {
-                        appState.alarms[idx].active = !appState.alarms[idx].active;
-                        stateManager.saveAllAlarms(appState);
-                        appState.isSnoozeActive = false;
-                        calculateNextAlarm(appState);
-                    }
-                }
+                    break;
             }
         }
     }
 
-    if (event == INPUT_BTN_AB_SHORT) {
-        if (appState.currentScreen == SCREEN_MENU) {
-            appState.isEditingAlarm = false;
-            appState.menuCursorIndex = (appState.menuCursorIndex + 1) % 4;
-            appState.menuItemIndex = (appState.menuCursorIndex == 2) ? (appState.currentTrackIndex % (actualNumTracks > 0 ? actualNumTracks : 1)) : 0;
-        }
+    if (event == INPUT_BTN_AB_SHORT && s.currentScreen == SCREEN_MENU) {
+        // A+B corto: scheda successiva (sulle Tracce evidenzia quella selezionata)
+        s.isEditingAlarm = false;
+        s.menuCursorIndex = (s.menuCursorIndex + 1) % 4;
+        s.menuItemIndex = (s.menuCursorIndex == 2) ? (s.currentTrackIndex % (actualNumTracks > 0 ? actualNumTracks : 1)) : 0;
     }
 
     if (event == INPUT_BTN_B_LONG) {
-        if (appState.currentScreen == SCREEN_MENU) {
-            if (appState.menuCursorIndex == 0) { // Impostazioni                
-                switch (appState.menuItemIndex) {
-                    case 0: // Sveglie Globali (ON/OFF)
-                        appState.alarmsGloballyEnabled = !appState.alarmsGloballyEnabled;
-                        stateManager.setAlarmsGloballyEnabled(appState, appState.alarmsGloballyEnabled);
-                        calculateNextAlarm(appState); 
-                        break;
-                    case 1: // Volume Sveglia (1-10) scorrimento indietro
-                        appState.alarmVolume = (appState.alarmVolume <= 1) ? 10 : appState.alarmVolume - 1;
-                        stateManager.setAlarmVolume(appState, appState.alarmVolume);
-                        break;
-                    case 2: // Snooze Time (1-20) scorrimento indietro
-                        appState.snoozeTime = (appState.snoozeTime <= 1) ? 20 : appState.snoozeTime - 1;
-                        stateManager.setSnoozeTime(appState, appState.snoozeTime);
-                        break;
-                    case 3: // Auto-Stop Time (1-5) scorrimento indietro
-                        appState.autoStopTime = (appState.autoStopTime <= 1) ? 5 : appState.autoStopTime - 1;
-                        stateManager.setAutoStopTime(appState, appState.autoStopTime);
-                        break;
-                    case 4: // Sincronizzazione NTP automatica (ON/OFF)
-                        appState.ntpDisabled = !appState.ntpDisabled;
-                        stateManager.setNtpDisabled(appState, appState.ntpDisabled);
-                        Serial.printf("[MENU] Sincronizzazione NTP: %s\n", appState.ntpDisabled ? "DISABILITATA" : "ABILITATA");
-                        if (appState.ntpDisabled) {
-                            strncpy(appState.wifiStatus, "✗ Disabilit.", sizeof(appState.wifiStatus) - 1);
-                        } else {
-                            strncpy(appState.wifiStatus, "↻ In attesa", sizeof(appState.wifiStatus) - 1);
-                        }
-                        break;
-                    case 5: // Forza Sincro NTP
-                        if (!appState.ntpDisabled) {
-                            triggerManualNtpSync(appState);
-                        } else {
-                            strncpy(appState.wifiStatus, "✗ Abilita prima NTP", sizeof(appState.wifiStatus) - 1);
-                        }
-                        break;
-                    case 6: // Luminosità LED (0-10) scorrimento indietro
-                        appState.ledBrightness = (appState.ledBrightness == 0) ? 10 : appState.ledBrightness - 1;
-                        stateManager.setLedBrightness(appState, appState.ledBrightness);
-                        if (ledState) led_on(appState.ledBrightness, false); 
-                        break;
-                    case 7: // Auto-Spegnimento LED scorrimento indietro
-                        appState.ledAutoOffTime = (appState.ledAutoOffTime <= 5) ? 30 : appState.ledAutoOffTime - 5;
-                        stateManager.setLedAutoOffTime(appState, appState.ledAutoOffTime);
-                        break;
-                    case 8: // Font UI
-                        appState.selectedFontIndex = (appState.selectedFontIndex + 2) % 3; // Corrisponde a -1 su base 3
-                        stateManager.setFontIndex(appState, appState.selectedFontIndex);
-                        Serial.printf("[MENU] Font selezionato: %d\n", appState.selectedFontIndex);
-                        break;
-                }
-            } else if (appState.menuCursorIndex == 1) { // Sveglie
-                if (appState.isEditingAlarm) {
-                    // NUOVO COMANDO: B Lungo in modalità modifica SCORRE INDIETRO i valori
-                    uint8_t idx = appState.menuItemIndex;
-                    if (appState.alarmEditFieldIndex == 3) {
-                        // Elimina la sveglia anche con pressione lunga per coerenza
-                        appState.isSnoozeActive = false; // Cancella eventuali snooze in corso
-                        stateManager.deleteAlarm(appState, idx);
-                        appState.isEditingAlarm = false;
-                        appState.alarmEditFieldIndex = 0;
-                    } else {
-                        if (appState.alarmEditFieldIndex == 0) {
-                            appState.alarms[idx].hour = (appState.alarms[idx].hour + 23) % 24; // -1 ora
-                        } else if (appState.alarmEditFieldIndex == 1) {
-                            appState.alarms[idx].minute = (appState.alarms[idx].minute + 55) % 60; // -5 minuti
-                        } else if (appState.alarmEditFieldIndex == 2) {
-                            appState.alarms[idx].recurrence = (AlarmRecurrence)((appState.alarms[idx].recurrence + 3) % 4); // Ricorrenza precedente
-                        }
-                        stateManager.saveAllAlarms(appState);
-                        appState.isSnoozeActive = false; // Cancella snooze fantasma anche se si scorre indietro
-                        calculateNextAlarm(appState);
-                    }
+        if (s.currentScreen == SCREEN_MENU) {
+            if (s.menuCursorIndex == 0) {
+                changeSetting(s, false);
+            } else if (s.menuCursorIndex == 1) {
+                if (s.isEditingAlarm) {
+                    editAlarm(s, false);
                 } else {
-                    // Se non stiamo modificando, B Lungo ENTRA in modalità modifica
-                    uint8_t idx = appState.menuItemIndex;
-                    if (idx == appState.numConfiguredAlarms && idx < 16) {
-                        // ADD ALARM anche con pressione lunga
-                        appState.numConfiguredAlarms++;
-                        appState.alarms[idx].hour = 7;
-                        appState.alarms[idx].minute = 0;
-                        appState.alarms[idx].active = true;
-                        appState.alarms[idx].recurrence = ALARM_DAILY;
-                        stateManager.saveAllAlarms(appState);
-                        appState.isSnoozeActive = false;
-                        calculateNextAlarm(appState);
+                    // B lungo entra in modifica (sulla riga "+" crea prima la sveglia)
+                    if (onAddRow(s)) {
+                        addAlarm(s, s.menuItemIndex);
+                        commitAlarms(s);
                     }
-                    appState.isEditingAlarm = true;
-                    appState.alarmEditFieldIndex = 0;
+                    s.isEditingAlarm = true;
+                    s.alarmEditFieldIndex = 0;
                 }
             }
-        } else if (appState.menuCursorIndex == 3) { // Bluetooth
-            if (appState.menuItemIndex == 2) {
-                // Dimentica dispositivi
-                Serial.println("[BLUETOOTH] Cancellazione memoria dispositivi...");
-                appState.pairedDevicesCount = 0;
-                // TODO: Implementare svuotamento effettivo memoria ESP_A2D
-            }
+        } else if (s.menuCursorIndex == 3 && s.menuItemIndex == 2) {
+            // NB: comportamento originale conservato. Questo ramo scatta FUORI dal menù
+            // (es. B lungo in Home con l'ultima scheda aperta = Bluetooth/riga 2).
+            Serial.println("[BLUETOOTH] Cancellazione memoria dispositivi...");
+            s.pairedDevicesCount = 0;
+            // TODO: svuotamento effettivo memoria ESP_A2D
         }
     }
 
     if (event == INPUT_BTN_AB_LONG) {
-        if (appState.currentScreen == SCREEN_HOME) {
-            appState.currentScreen = SCREEN_MENU;
-        } else if (appState.currentScreen == SCREEN_MENU) {
-            // Esce dal menù e torna alla schermata Home
-            appState.currentScreen = SCREEN_HOME;
-            appState.isEditingAlarm = false; // Sicurezza: esce dalla modalità modifica sveglia se era rimasta attiva
+        // A+B lungo: entra/esce dal menù
+        if (s.currentScreen == SCREEN_HOME) {
+            s.currentScreen = SCREEN_MENU;
+        } else if (s.currentScreen == SCREEN_MENU) {
+            s.currentScreen = SCREEN_HOME;
+            s.isEditingAlarm = false;
         }
     }
 }
