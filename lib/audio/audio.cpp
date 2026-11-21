@@ -2,7 +2,7 @@
 #include "../../include/config.h"
 #include "../watchdog/watchdog.h"
 #include <LittleFS.h>
-#include <math.h>
+#include "../logic/logic.h"
 #include <memory>
 #include "AudioFileSourceLittleFS.h"
 #include "AudioGeneratorMP3.h"
@@ -260,15 +260,8 @@ void setVolume(uint8_t volume) {
         if (volume < 1) volume = 1;
         if (volume > 10) volume = 10;
 
-        // --- MAPPATURA NON-LINEARE CON RANGE LIMITATO [0.1 - 0.9] ---
-        // 1. Normalizza il volume (da 1-10) a un valore 't' tra 0.0 e 1.0
-        float t = (volume - 1.0f) / 9.0f;
-        
-        // 2. Applica la curva esponenziale a 't'
-        float curve = pow(t, 3.0f); 
-        
-        // 3. Mappa la curva sul range di guadagno finale: Min = 0.03, Max = 0.9
-        float gain = 0.03f + (curve * 0.8f);
+        // Curva cubica, guadagno 0.03..0.83 (lib/logic)
+        float gain = volumeGain(volume);
 
         Serial.printf("[AUDIO] Volume impostato a %d/10. Guadagno non-lineare applicato: %.4f\n", volume, gain);
         out->SetGain(gain);

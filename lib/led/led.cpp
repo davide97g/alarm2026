@@ -1,6 +1,6 @@
 #include "led.h"
 #include "../watchdog/watchdog.h"
-#include <math.h>
+#include "../logic/logic.h"
 
 static uint8_t led_pin = 0;
 static const uint8_t led_channel = 0; // Usiamo il canale PWM 0 dell'ESP32
@@ -18,11 +18,8 @@ void led_on(uint8_t brightness_1_to_10, bool fade) {
     if (brightness_1_to_10 > 10) brightness_1_to_10 = 10;
     if (brightness_1_to_10 < 1) brightness_1_to_10 = 1;
     
-    // --- MAPPATURA NON-LINEARE (ESPONENZIALE) ---
-    // Converte il valore lineare 1-10 in una curva quadratica per l'occhio umano
-    float t = (brightness_1_to_10 - 1.0f) / 9.0f;
-    float curve = pow(t, 2.0f);
-    uint32_t target_duty = round(5.0f + (250.0f * curve)); // Minimo 5, massimo 255
+    // Curva quadratica per l'occhio umano (lib/logic)
+    uint32_t target_duty = ledCurveDuty(brightness_1_to_10);
     
     if (fade) {
         uint32_t current_duty = ledcRead(led_channel);

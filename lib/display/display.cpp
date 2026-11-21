@@ -70,35 +70,6 @@ void initDisplay() {
     display.setTextColor(GxEPD_BLACK);
 }
 
-void displayFullRefresh() {
-    display.init(115200, true, 10, false);
-    display.setFullWindow();
-    display.firstPage();
-    do {
-        watchdog_feed();
-        display.fillScreen(GxEPD_WHITE);
-        display.setCursor(10, 30);
-        display.print("E-Paper 5.79\" Full Refresh completato!");
-    } while (display.nextPage());
-    // Rimosso hibernate() per coerenza con la conservazione della RAM
-}
-
-void displayPartialRefresh() {
-    // Init senza reset hardware per preservare la RAM (come facciamo in ui.cpp)
-    display.init(115200, false, 0, false);
-
-    // Sottratti 8 pixel in larghezza per prevenire il force-full-refresh di alcuni driver
-    display.setPartialWindow(0, 0, display.width() - 8, display.height());
-    display.firstPage();
-    do {
-        watchdog_feed();
-        display.fillScreen(GxEPD_WHITE);
-        display.setCursor(10, 60);
-        display.print("Aggiornamento Parziale (Partial Refresh)");
-    } while (display.nextPage());
-    // Rimosso hibernate()
-}
-
 void displayTestText(const char* text) {
     display.init(115200, true, 2, false);
     display.setFullWindow();

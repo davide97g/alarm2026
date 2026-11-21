@@ -8,6 +8,15 @@ static bool lastNtpSuccess = false;
 
 const uint8_t STATUS_NTP_TIMEOUT = 100; // Stato custom per il timeout del server
 
+// Spegne la radio (risparmio energetico) e ricorda l'esito per getWifiErrorMessage()
+static bool finish(uint8_t status, bool success) {
+    lastWifiStatus = status;
+    lastNtpSuccess = success;
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    return success;
+}
+
 bool syncTimeNTP(const char* ssid, const char* password, unsigned long timeout_ms) {
     Serial.printf("[NTP] Tentativo di sincronizzazione NTP (timeout=%ums)...\n", timeout_ms);
     Serial.printf("[NTP] Connessione alla rete WiFi: %s\n", ssid);
@@ -33,11 +42,7 @@ bool syncTimeNTP(const char* ssid, const char* password, unsigned long timeout_m
 
     if (WiFi.status() != WL_CONNECTED) {
         Serial.printf("[NTP] ERRORE: WiFi non connesso dopo %lldms. Stato finale: %d\n", (esp_timer_get_time() - startTimeUs) / 1000, WiFi.status());
-        lastWifiStatus = WiFi.status();  // Memorizza l'errore WiFi
-        lastNtpSuccess = false;
-        WiFi.disconnect(true);
-        WiFi.mode(WIFI_OFF);
-        return false;
+        return finish(WiFi.status(), false);
     }
 
     int64_t wifiConnectedTimeUs = esp_timer_get_time();
@@ -49,11 +54,7 @@ bool syncTimeNTP(const char* ssid, const char* password, unsigned long timeout_m
     long remaining_timeout_ms = (long)timeout_ms - (long)elapsedForWifi_ms;
     if (remaining_timeout_ms <= 1000) {
         Serial.printf("[NTP] ERRORE: Timeout esaurito (%ldms) durante la connessione WiFi. Impossibile procedere con NTP.\n", remaining_timeout_ms);
-        lastWifiStatus = WL_CONNECT_FAILED;
-        lastNtpSuccess = false;
-        WiFi.disconnect(true);
-        WiFi.mode(WIFI_OFF);
-        return false;
+        return finish(WL_CONNECT_FAILED, false);
     }
 
     // ATTESA STRATEGICA: Il router ha assegnato l'IP, ma il NAT (Internet) potrebbe 
@@ -97,11 +98,7 @@ bool syncTimeNTP(const char* ssid, const char* password, unsigned long timeout_m
         watchdog_feed();  // Alimenta watchdog dopo timeout NTP
         int64_t elapsedMs = (esp_timer_get_time() - ntpStartUs) / 1000;
         Serial.printf("[NTP] ERRORE: Timeout nella ricezione orario NTP (%lldms)\n", elapsedMs);
-        lastWifiStatus = STATUS_NTP_TIMEOUT;  // Timeout NTP distinto dall'errore WiFi
-        lastNtpSuccess = false;
-        WiFi.disconnect(true);
-        WiFi.mode(WIFI_OFF);
-        return false;
+        return finish(STATUS_NTP_TIMEOUT, false); // Timeout NTP distinto dall'errore WiFi
     }
     watchdog_feed();  // Alimenta watchdog dopo successo NTP
 
@@ -110,14 +107,8 @@ bool syncTimeNTP(const char* ssid, const char* password, unsigned long timeout_m
                  timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
                  timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, (esp_timer_get_time() - ntpStartUs) / 1000);
     
-    // Disconnette il WiFi per risparmiare energia e interrompe la RF
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
+    finish(WL_CONNECTED, true);
     Serial.println("[NTP] Sincronizzazione NTP completata. Modulo WiFi spento.");
-    
-    lastNtpSuccess = true;
-    lastWifiStatus = WL_CONNECTED;  // Successo
-    
     return true;
 }
 

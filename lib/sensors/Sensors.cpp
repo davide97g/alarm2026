@@ -39,36 +39,13 @@ void initSensors() {
     }
 }
 
-void printEnvironment() {
-    Serial.print("Temperatura: ");
-    Serial.print(bme.readTemperature());
-    Serial.println(" *C");
-
-    Serial.print("Umidita': ");
-    Serial.print(bme.readHumidity());
-    Serial.println(" %");
-    Serial.println("----------------------");
-}
-
-void printTime() {
-    DateTime now = rtc.now();
-    Serial.print("Data e Ora: ");
-    Serial.print(now.day(), DEC);    Serial.print('/');
-    Serial.print(now.month(), DEC);  Serial.print('/');
-    Serial.print(now.year(), DEC);   Serial.print("  ");
-    Serial.print(now.hour(), DEC);   Serial.print(':');
-    Serial.print(now.minute(), DEC); Serial.print(':');
-    Serial.print(now.second(), DEC); Serial.println("\n----------------------");
+struct tm rtcLocalTime(time_t* utcOut) {
+    time_t utc_epoch = rtc.now().unixtime();
+    if (utcOut) *utcOut = utc_epoch;
+    return *localtime(&utc_epoch);
 }
 
 // --- Gestione Allarmi RTC (DS3231) ---
-
-void rtc_setupAlarm1_EveryMinute() {
-    rtc.disableAlarm(1);
-    rtc.clearAlarm(1);
-    DateTime alarmTime(2000, 1, 1, 0, 0, 0); 
-    rtc.setAlarm1(alarmTime, DS3231_A1_Second);
-}
 
 void rtc_setupAlarm2(uint8_t hour, uint8_t minute) {
     rtc.disableAlarm(2);
